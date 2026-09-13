@@ -8,6 +8,11 @@ const router = express.Router();
 
 const PLANOS_VALIDOS = ['basico', 'pro', 'premium'];
 
+function ehEmailAdmin(email){
+  const admin = (process.env.ADMIN_EMAIL || '').toLowerCase().trim();
+  return !!admin && email.toLowerCase().trim() === admin;
+}
+
 function paraJson(usuario) {
   const { senha_hash, ...resto } = usuario;
   return resto;
@@ -29,12 +34,13 @@ router.post('/registrar', (req, res) => {
 
   const planoEscolhido = PLANOS_VALIDOS.includes(plano) ? plano : 'basico';
   const senha_hash = bcrypt.hashSync(senha, 10);
+  const isAdmin = ehEmailAdmin(email) ? 1 : 0;
 
   try {
     const resultado = db.prepare(`
-      INSERT INTO usuarios (nome, email, senha_hash, negocio_nome, segmento, plano)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(nome, email.toLowerCase().trim(), senha_hash, negocio_nome || null, segmento || 'restaurante', planoEscolhido);
+      INSERT INTO usuarios (nome, email, senha_hash, negocio_nome, segmento, plano, is_admin)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(nome, email.toLowerCase().trim(), senha_hash, negocio_nome || null, segmento || 'restaurante', planoEscolhido, isAdmin);
 
     const usuario = db.prepare('SELECT * FROM usuarios WHERE id = ?').get(resultado.lastInsertRowid);
     const token = gerarToken(usuario.id);
@@ -58,6 +64,12 @@ router.post('/login', (req, res) => {
   const usuario = db.prepare('SELECT * FROM usuarios WHERE email = ?').get(email.toLowerCase().trim());
   if (!usuario || !bcrypt.compareSync(senha, usuario.senha_hash)) {
     return res.status(401).json({ erro: 'E-mail ou senha incorretos.' });
+  }
+
+  const deveSerAdmin = ehEmailAdmin(usuario.email) ? 1 : 0;
+  if (usuario.is_admin !== deveSerAdmin) {
+    db.prepare('UPDATE usuarios SET is_admin = ? WHERE id = ?').run(deveSerAdmin, usuario.id);
+    usuario.is_admin = deveSerAdmin;
   }
 
   const token = gerarToken(usuario.id);
