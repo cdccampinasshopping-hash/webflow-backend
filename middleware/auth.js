@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const db = require('../db');
 
 function exigirLogin(req, res, next) {
   const cabecalho = req.headers.authorization || '';
@@ -17,4 +18,12 @@ function exigirLogin(req, res, next) {
   }
 }
 
-module.exports = { exigirLogin };
+function exigirAdmin(req, res, next) {
+  const usuario = db.prepare('SELECT is_admin FROM usuarios WHERE id = ?').get(req.usuarioId);
+  if (!usuario || !usuario.is_admin) {
+    return res.status(403).json({ erro: 'Essa conta não tem acesso administrativo.' });
+  }
+  next();
+}
+
+module.exports = { exigirLogin, exigirAdmin };
