@@ -1,14 +1,12 @@
-// server.js
-// Ponto de entrada do backend. Roda o servidor Express com as rotas de
-// autenticação (/api/auth) e de dados do painel (/api/dados).
-
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 
 const authRoutes = require('./routes/auth');
 const dadosRoutes = require('./routes/dados');
-const { exigirLogin } = require('./middleware/auth');
+const suporteRoutes = require('./routes/suporte');
+const adminRoutes = require('./routes/admin');
+const { exigirLogin, exigirAdmin } = require('./middleware/auth');
 
 if (!process.env.JWT_SECRET) {
   console.error('ERRO: defina JWT_SECRET no arquivo .env antes de rodar o servidor (veja .env.example).');
@@ -25,13 +23,14 @@ app.get('/', (req, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/dados', exigirLogin, dadosRoutes);
+app.use('/api/suporte', exigirLogin, suporteRoutes);
+app.use('/api/admin', exigirLogin, exigirAdmin, adminRoutes);
 
-// Tratamento simples de rota não encontrada
 app.use((req, res) => {
   res.status(404).json({ erro: 'Rota não encontrada.' });
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Webflow API rodando em http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Webflow API rodando na porta ${PORT}`);
 });
