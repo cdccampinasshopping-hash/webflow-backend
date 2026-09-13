@@ -142,4 +142,4 @@ só mostrar "Cardápio 3D" pra quem está no Premium.
 - Recuperação de senha por e-mail.
 - Cobrança automática (ex: Stripe ou Mercado Pago) integrada ao upgrade de plano.
 - Painel administrativo seu (dono do Webflow) pra ver todos os clientes e planos.
-- Trocar SQLite por Postgres se a base de clientes crescer muito.
+- Trocar SQLite por Postgres se a base de clientes crescer muito...
