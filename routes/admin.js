@@ -77,4 +77,41 @@ router.delete('/clientes/:id', (req, res) => {
   res.json({ ok: true, id: Number(id) });
 });
 
+// Relatório consolidado: vendas por vendedor + ranking de clientes por scans
+router.get('/relatorios', (req, res) => {
+  const vendedores = db.prepare(`
+    SELECT
+      v.vendedor_id,
+      u.nome AS vendedor_nome,
+      u.email AS vendedor_email,
+      COUNT(*) AS totalVendas,
+      SUM(CASE WHEN v.status = 'confirmado' THEN 1 ELSE 0 END) AS totalConfirmado,
+      SUM(CASE WHEN v.status = 'pendente' THEN 1 ELSE 0 END) AS totalPendente,
+      SUM(CASE WHEN v.status = 'confirmado' THEN v.valor ELSE 0 END) AS valorConfirmado
+    FROM vendas v
+    JOIN usuarios u ON u.id = v.vendedor_id
+    GROUP BY v.vendedor_id
+    ORDER BY valorConfirmado DESC
+  `).all();
+
+  const rankingScans = db.prepare(`
+    SELECT id, nome, negocio_nome, nfc_scans
+    FROM usuarios
+    WHERE is_admin = 0 AND nfc_scans > 0
+    ORDER BY nfc_scans DESC
+    LIMIT 10
+  `).all();
+
+  const resumoGeral = db.prepare(`
+    SELECT
+      COUNT(*) AS totalVendas,
+      SUM(CASE WHEN status = 'confirmado' THEN 1 ELSE 0 END) AS totalConfirmado,
+      SUM(CASE WHEN status = 'pendente' THEN 1 ELSE 0 END) AS totalPendente,
+      SUM(CASE WHEN status = 'confirmado' THEN valor ELSE 0 END) AS valorTotalConfirmado
+    FROM vendas
+  `).get();
+
+  res.json({ vendedores, rankingScans, resumoGeral });
+});
+
 module.exports = router;
