@@ -1,11 +1,15 @@
 const express = require('express');
 const db = require('../db');
+const { exigirLogin, exigirAdmin } = require('../middleware/auth');
 
 const router = express.Router();
 
+// A partir daqui, toda rota deste arquivo exige estar logado E ser admin
+router.use(exigirLogin, exigirAdmin);
+
 router.get('/clientes', (req, res) => {
   const clientes = db.prepare(`
-    SELECT id, nome, email, negocio_nome, segmento, plano, criado_em
+    SELECT id, nome, email, negocio_nome, segmento, plano, is_comercial, criado_em
     FROM usuarios
     WHERE is_admin = 0
     ORDER BY criado_em DESC
@@ -32,6 +36,22 @@ router.patch('/suporte/:id', (req, res) => {
   }
   db.prepare('UPDATE suporte SET status = ? WHERE id = ?').run(status, req.params.id);
   res.json({ id: Number(req.params.id), status });
+});
+
+// Marca ou desmarca um usuário como parte do time comercial
+router.patch('/clientes/:id/comercial', (req, res) => {
+  const { id } = req.params;
+  const { is_comercial } = req.body || {};
+
+  const usuario = db.prepare('SELECT id FROM usuarios WHERE id = ?').get(id);
+  if (!usuario) {
+    return res.status(404).json({ erro: 'Usuário não encontrado.' });
+  }
+
+  db.prepare('UPDATE usuarios SET is_comercial = ? WHERE id = ?').run(is_comercial ? 1 : 0, id);
+
+  const atualizado = db.prepare('SELECT id, nome, email, is_comercial FROM usuarios WHERE id = ?').get(id);
+  res.json({ usuario: atualizado });
 });
 
 module.exports = router;
