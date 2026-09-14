@@ -27,4 +27,11 @@ function exigirAdmin(req, res, next) {
 }
 
 function exigirComercial(req, res, next) {
-  const usuario = db.prepare('SELECT is_comercial FROM usuarios WHERE id =
+  const usuario = db.prepare('SELECT is_comercial FROM usuarios WHERE id = ?').get(req.usuarioId);
+  if (!usuario || !usuario.is_comercial) {
+    return res.status(403).json({ erro: 'Essa conta não tem acesso à área comercial.' });
+  }
+  next();
+}
+
+module.exports = { exigirLogin, exigirAdmin, exigirComercial };
