@@ -25,6 +25,12 @@ function gerarToken(usuarioId) {
   return jwt.sign({ usuarioId }, process.env.JWT_SECRET, { expiresIn: '30d' });
 }
 
+// Gera um código curto e único pra identificar a placa NFC do cliente
+// (usado na URL webflowservices.com/r/CODIGO gravada na placa física)
+function gerarCodigoNfc() {
+  return crypto.randomBytes(4).toString('hex');
+}
+
 router.post('/registrar', (req, res) => {
   const { nome, email, senha, negocio_nome, segmento, plano } = req.body || {};
 
@@ -44,6 +50,10 @@ router.post('/registrar', (req, res) => {
       INSERT INTO usuarios (nome, email, senha_hash, negocio_nome, segmento, plano, is_admin)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(nome, email.toLowerCase().trim(), senha_hash, negocio_nome || null, segmento || 'restaurante', planoEscolhido, isAdmin);
+
+    // Gera o código único da placa NFC pro cliente recém-criado
+    const codigoNfc = gerarCodigoNfc();
+    db.prepare('UPDATE usuarios SET codigo_nfc = ? WHERE id = ?').run(codigoNfc, resultado.lastInsertRowid);
 
     const usuario = db.prepare('SELECT * FROM usuarios WHERE id = ?').get(resultado.lastInsertRowid);
     const token = gerarToken(usuario.id);
