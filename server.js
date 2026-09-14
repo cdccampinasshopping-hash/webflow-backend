@@ -37,6 +37,7 @@ app.get('/r/:codigo', (req, res) => {
   }
 
   db.prepare('UPDATE usuarios SET nfc_scans = nfc_scans + 1 WHERE id = ?').run(cliente.id);
+  db.prepare('INSERT INTO scans_log (usuario_id) VALUES (?)').run(cliente.id);
 
   if (!cliente.google_place_id) {
     return res.redirect(`${SITE_URL}/avaliacao-pendente.html`);
