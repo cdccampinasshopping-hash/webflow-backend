@@ -40,6 +40,14 @@ catch (e) { /* coluna já existe, tudo bem */ }
 try { db.exec(`ALTER TABLE usuarios ADD COLUMN reset_token_expira TEXT`); }
 catch (e) { /* coluna já existe, tudo bem */ }
 
+// Colunas da funcionalidade de placa NFC de avaliação Google
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN codigo_nfc TEXT`); }
+catch (e) { /* coluna já existe, tudo bem */ }
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN google_place_id TEXT`); }
+catch (e) { /* coluna já existe, tudo bem */ }
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN nfc_scans INTEGER NOT NULL DEFAULT 0`); }
+catch (e) { /* coluna já existe, tudo bem */ }
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS suporte (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,11 +61,3 @@ db.exec(`
 `);
 
 module.exports = db;
-
-
-db.run(`ALTER TABLE clientes ADD COLUMN codigo_nfc TEXT`, (err) => {
-  // Se já existir essa coluna, o SQLite dá erro — pode ignorar esse erro específico
-  if (err && !err.message.includes('duplicate column')) {
-    console.error('Erro ao adicionar coluna codigo_nfc:', err);
-  }
-});
