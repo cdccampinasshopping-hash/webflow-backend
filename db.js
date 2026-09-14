@@ -80,4 +80,8 @@ db.exec(`
   )
 `);
 
+// Guarda o ID do pagamento Pix no Mercado Pago, pra reconhecer no webhook
+try { db.exec(`ALTER TABLE vendas ADD COLUMN mp_payment_id TEXT`); }
+catch (e) { /* coluna já existe, tudo bem */ }
+
 module.exports = db;
