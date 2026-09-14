@@ -154,4 +154,53 @@ router.patch('/vendas/:id/confirmar', (req, res) => {
   res.json({ id: venda.id, status: 'confirmado' });
 });
 
+// Gera um novo Pix pra uma venda pendente (caso o QR original tenha falhado ou expirado)
+router.post('/vendas/:id/gerar-pix', async (req, res) => {
+  const venda = db.prepare(`
+    SELECT v.id, v.status, v.forma_pagamento, v.valor, u.email AS cliente_email
+    FROM vendas v
+    JOIN usuarios u ON u.id = v.usuario_id
+    WHERE v.id = ? AND v.vendedor_id = ?
+  `).get(req.params.id, req.usuarioId);
+
+  if (!venda) {
+    return res.status(404).json({ erro: 'Venda não encontrada.' });
+  }
+  if (venda.forma_pagamento !== 'pix') {
+    return res.status(400).json({ erro: 'Essa venda não é por Pix.' });
+  }
+  if (venda.status === 'confirmado') {
+    return res.status(400).json({ erro: 'Essa venda já está confirmada.' });
+  }
+
+  try {
+    const payment = new Payment(client);
+    const notificationUrl = `${process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`}/api/pagamentos/webhook`;
+
+    const resultadoPix = await payment.create({
+      body: {
+        transaction_amount: venda.valor,
+        description: 'Webflow — placa NFC',
+        payment_method_id: 'pix',
+        payer: { email: venda.cliente_email },
+        external_reference: `venda|${venda.id}`,
+        notification_url: notificationUrl,
+      },
+    });
+
+    const dadosPix = resultadoPix.point_of_interaction?.transaction_data;
+    db.prepare('UPDATE vendas SET mp_payment_id = ? WHERE id = ?').run(String(resultadoPix.id), venda.id);
+
+    res.json({
+      pix: {
+        qrCodeBase64: dadosPix?.qr_code_base64 || null,
+        copiaECola: dadosPix?.qr_code || null,
+      },
+    });
+  } catch (erroPix) {
+    console.error('Erro ao gerar novo Pix', erroPix);
+    res.status(500).json({ erro: 'Não foi possível gerar o Pix agora. Tente novamente em instantes.' });
+  }
+});
+
 module.exports = router;
