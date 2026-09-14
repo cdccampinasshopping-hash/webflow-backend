@@ -7,6 +7,7 @@ const { exigirLogin } = require('../middleware/auth');
 const router = express.Router();
 
 const PLANOS_VALIDOS = ['basico', 'pro', 'premium'];
+const ORDEM_PLANOS = ['basico', 'pro', 'premium'];
 
 function ehEmailAdmin(email){
   const admin = (process.env.ADMIN_EMAIL || '').toLowerCase().trim();
@@ -88,9 +89,17 @@ router.patch('/plano', exigirLogin, (req, res) => {
     return res.status(400).json({ erro: `Plano inválido. Use um de: ${PLANOS_VALIDOS.join(', ')}.` });
   }
 
+  const usuario = db.prepare('SELECT plano FROM usuarios WHERE id = ?').get(req.usuarioId);
+  const indiceAtual = ORDEM_PLANOS.indexOf(usuario.plano);
+  const indiceNovo = ORDEM_PLANOS.indexOf(plano);
+
+  if (indiceNovo > indiceAtual) {
+    return res.status(403).json({ erro: 'Para fazer upgrade de plano, use o pagamento em Planos.' });
+  }
+
   db.prepare('UPDATE usuarios SET plano = ? WHERE id = ?').run(plano, req.usuarioId);
-  const usuario = db.prepare('SELECT * FROM usuarios WHERE id = ?').get(req.usuarioId);
-  res.json({ usuario: paraJson(usuario) });
+  const usuarioAtualizado = db.prepare('SELECT * FROM usuarios WHERE id = ?').get(req.usuarioId);
+  res.json({ usuario: paraJson(usuarioAtualizado) });
 });
 
 module.exports = router;
