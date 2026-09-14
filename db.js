@@ -84,4 +84,14 @@ db.exec(`
 try { db.exec(`ALTER TABLE vendas ADD COLUMN mp_payment_id TEXT`); }
 catch (e) { /* coluna já existe, tudo bem */ }
 
+// Registra cada scan da placa NFC com data/hora, pra montar gráficos por dia/semana/mês
+db.exec(`
+  CREATE TABLE IF NOT EXISTS scans_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    usuario_id INTEGER NOT NULL,
+    criado_em TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+  )
+`);
+
 module.exports = db;
