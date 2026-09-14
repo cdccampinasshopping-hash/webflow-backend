@@ -6,6 +6,7 @@ const authRoutes = require('./routes/auth');
 const dadosRoutes = require('./routes/dados');
 const suporteRoutes = require('./routes/suporte');
 const adminRoutes = require('./routes/admin');
+const comercialRoutes = require('./routes/comercial');
 const pagamentosRoutes = require('./routes/pagamentos');
 const webhookPagamentosRoutes = require('./routes/webhook-pagamentos');
 const { exigirLogin, exigirAdmin } = require('./middleware/auth');
@@ -27,6 +28,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/dados', exigirLogin, dadosRoutes);
 app.use('/api/suporte', exigirLogin, suporteRoutes);
 app.use('/api/admin', exigirLogin, exigirAdmin, adminRoutes);
+app.use('/api/comercial', comercialRoutes);
 app.use('/api/pagamentos/webhook', webhookPagamentosRoutes);
 app.use('/api/pagamentos', exigirLogin, pagamentosRoutes);
 
