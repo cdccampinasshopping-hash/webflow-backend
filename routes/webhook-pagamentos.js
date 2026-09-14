@@ -15,10 +15,21 @@ router.post('/', async (req, res) => {
       const info = await payment.get({ id });
 
       if (info.status === 'approved' && info.external_reference) {
-        const [usuarioId, plano] = String(info.external_reference).split('|');
-        if (usuarioId && plano) {
-          db.prepare('UPDATE usuarios SET plano = ? WHERE id = ?').run(plano, usuarioId);
-          console.log(`Pagamento aprovado — usuário ${usuarioId} agora é plano ${plano}`);
+        const referencia = String(info.external_reference);
+
+        if (referencia.startsWith('venda|')) {
+          // Pagamento de uma venda feita pelo time comercial (placa NFC via Pix)
+          const vendaId = referencia.split('|')[1];
+          db.prepare(`UPDATE vendas SET status = 'confirmado', confirmado_em = ? WHERE id = ?`)
+            .run(new Date().toISOString(), vendaId);
+          console.log(`Pagamento Pix aprovado — venda ${vendaId} confirmada`);
+        } else {
+          // Pagamento de upgrade de plano feito pelo próprio cliente
+          const [usuarioId, plano] = referencia.split('|');
+          if (usuarioId && plano) {
+            db.prepare('UPDATE usuarios SET plano = ? WHERE id = ?').run(plano, usuarioId);
+            console.log(`Pagamento aprovado — usuário ${usuarioId} agora é plano ${plano}`);
+          }
         }
       }
     }
