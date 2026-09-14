@@ -6,6 +6,8 @@ const authRoutes = require('./routes/auth');
 const dadosRoutes = require('./routes/dados');
 const suporteRoutes = require('./routes/suporte');
 const adminRoutes = require('./routes/admin');
+const pagamentosRoutes = require('./routes/pagamentos');
+const webhookPagamentosRoutes = require('./routes/webhook-pagamentos');
 const { exigirLogin, exigirAdmin } = require('./middleware/auth');
 
 if (!process.env.JWT_SECRET) {
@@ -25,6 +27,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/dados', exigirLogin, dadosRoutes);
 app.use('/api/suporte', exigirLogin, suporteRoutes);
 app.use('/api/admin', exigirLogin, exigirAdmin, adminRoutes);
+app.use('/api/pagamentos/webhook', webhookPagamentosRoutes);
+app.use('/api/pagamentos', exigirLogin, pagamentosRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ erro: 'Rota não encontrada.' });
