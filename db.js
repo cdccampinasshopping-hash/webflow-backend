@@ -53,3 +53,11 @@ db.exec(`
 `);
 
 module.exports = db;
+
+
+db.run(`ALTER TABLE clientes ADD COLUMN codigo_nfc TEXT`, (err) => {
+  // Se já existir essa coluna, o SQLite dá erro — pode ignorar esse erro específico
+  if (err && !err.message.includes('duplicate column')) {
+    console.error('Erro ao adicionar coluna codigo_nfc:', err);
+  }
+});
