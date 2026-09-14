@@ -122,7 +122,32 @@ router.get('/relatorios', (req, res) => {
     comissaoPercentual: COMISSAO_PERCENTUAL,
   };
 
-  res.json({ vendedores, rankingScans, resumoGeral });
+  // Scans da placa NFC agrupados por dia (últimos 30 dias), semana (últimas 12) e mês (últimos 12)
+  const scansPorDia = db.prepare(`
+    SELECT strftime('%Y-%m-%d', criado_em) AS periodo, COUNT(*) AS total
+    FROM scans_log
+    WHERE criado_em >= datetime('now', '-30 days')
+    GROUP BY periodo
+    ORDER BY periodo ASC
+  `).all();
+
+  const scansPorSemana = db.prepare(`
+    SELECT strftime('%Y-%W', criado_em) AS periodo, COUNT(*) AS total
+    FROM scans_log
+    WHERE criado_em >= datetime('now', '-84 days')
+    GROUP BY periodo
+    ORDER BY periodo ASC
+  `).all();
+
+  const scansPorMes = db.prepare(`
+    SELECT strftime('%Y-%m', criado_em) AS periodo, COUNT(*) AS total
+    FROM scans_log
+    WHERE criado_em >= datetime('now', '-365 days')
+    GROUP BY periodo
+    ORDER BY periodo ASC
+  `).all();
+
+  res.json({ vendedores, rankingScans, resumoGeral, scansPorDia, scansPorSemana, scansPorMes });
 });
 
 module.exports = router;
