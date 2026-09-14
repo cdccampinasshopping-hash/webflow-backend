@@ -9,7 +9,7 @@ router.use(exigirLogin, exigirAdmin);
 
 router.get('/clientes', (req, res) => {
   const clientes = db.prepare(`
-    SELECT id, nome, email, negocio_nome, segmento, plano, is_comercial, criado_em
+    SELECT id, nome, email, negocio_nome, segmento, plano, is_comercial, codigo_nfc, google_place_id, nfc_scans, criado_em
     FROM usuarios
     WHERE is_admin = 0
     ORDER BY criado_em DESC
