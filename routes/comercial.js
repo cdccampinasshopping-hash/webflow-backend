@@ -1,10 +1,12 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+const { MercadoPagoConfig, Payment } = require('mercadopago');
 const db = require('../db');
 const { exigirLogin, exigirComercial } = require('../middleware/auth');
 
 const router = express.Router();
+const client = new MercadoPagoConfig({ accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN });
 
 // A partir daqui, toda rota exige estar logado E ser do time comercial
 router.use(exigirLogin, exigirComercial);
@@ -26,7 +28,7 @@ function extrairPlaceId(input) {
 }
 
 // Cadastra um cliente novo + registra a venda (pendente se Pix, confirmada se dinheiro/cartão)
-router.post('/cadastrar', (req, res) => {
+router.post('/cadastrar', async (req, res) => {
   const {
     nome, email, senha, negocio_nome, segmento, plano,
     linkGoogle, formaPagamento
@@ -67,10 +69,44 @@ router.post('/cadastrar', (req, res) => {
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(clienteId, req.usuarioId, formaPagamento, statusVenda, valor, confirmadoEm);
 
+    const vendaId = venda.lastInsertRowid;
+
+    // Se for Pix, gera o pagamento de verdade no Mercado Pago e devolve o QR code
+    let pix = null;
+    if (formaPagamento === 'pix') {
+      try {
+        const payment = new Payment(client);
+        const notificationUrl = `${process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`}/api/pagamentos/webhook`;
+
+        const resultadoPix = await payment.create({
+          body: {
+            transaction_amount: valor,
+            description: `Webflow — placa NFC (${planoEscolhido})`,
+            payment_method_id: 'pix',
+            payer: { email: email.toLowerCase().trim() },
+            external_reference: `venda|${vendaId}`,
+            notification_url: notificationUrl,
+          },
+        });
+
+        const dadosPix = resultadoPix.point_of_interaction?.transaction_data;
+        db.prepare('UPDATE vendas SET mp_payment_id = ? WHERE id = ?').run(String(resultadoPix.id), vendaId);
+
+        pix = {
+          qrCodeBase64: dadosPix?.qr_code_base64 || null,
+          copiaECola: dadosPix?.qr_code || null,
+        };
+      } catch (erroPix) {
+        console.error('Erro ao gerar Pix', erroPix);
+        // O cliente e a venda já foram criados; o Pix pode ser gerado de novo depois se falhar aqui.
+      }
+    }
+
     res.status(201).json({
       cliente: { id: clienteId, nome, email, plano: planoEscolhido },
-      venda: { id: venda.lastInsertRowid, status: statusVenda, formaPagamento, valor },
+      venda: { id: vendaId, status: statusVenda, formaPagamento, valor },
       placeIdReconhecido: !!placeId,
+      pix,
     });
   } catch (e) {
     if (String(e.message).includes('UNIQUE')) {
