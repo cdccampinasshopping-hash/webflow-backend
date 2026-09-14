@@ -48,6 +48,10 @@ catch (e) { /* coluna já existe, tudo bem */ }
 try { db.exec(`ALTER TABLE usuarios ADD COLUMN nfc_scans INTEGER NOT NULL DEFAULT 0`); }
 catch (e) { /* coluna já existe, tudo bem */ }
 
+// Marca quem é do time comercial (etiquetado manualmente pelo admin)
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN is_comercial INTEGER NOT NULL DEFAULT 0`); }
+catch (e) { /* coluna já existe, tudo bem */ }
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS suporte (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,6 +61,22 @@ db.exec(`
     status TEXT NOT NULL DEFAULT 'aberto',
     criado_em TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+  )
+`);
+
+// Tabela de vendas feitas pelo time comercial (cada venda gera/ativa um cliente)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS vendas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    usuario_id INTEGER NOT NULL,
+    vendedor_id INTEGER NOT NULL,
+    forma_pagamento TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pendente',
+    valor REAL NOT NULL,
+    criado_em TEXT DEFAULT (datetime('now')),
+    confirmado_em TEXT,
+    FOREIGN KEY (usuario_id) REFERENCES usuarios(id),
+    FOREIGN KEY (vendedor_id) REFERENCES usuarios(id)
   )
 `);
 
