@@ -7,6 +7,8 @@ const router = express.Router();
 // A partir daqui, toda rota deste arquivo exige estar logado E ser admin
 router.use(exigirLogin, exigirAdmin);
 
+const COMISSAO_PERCENTUAL = Number(process.env.COMISSAO_PERCENTUAL || 30);
+
 router.get('/clientes', (req, res) => {
   const clientes = db.prepare(`
     SELECT id, nome, email, negocio_nome, segmento, plano, is_comercial, codigo_nfc, google_place_id, nfc_scans, criado_em
@@ -92,7 +94,10 @@ router.get('/relatorios', (req, res) => {
     JOIN usuarios u ON u.id = v.vendedor_id
     GROUP BY v.vendedor_id
     ORDER BY valorConfirmado DESC
-  `).all();
+  `).all().map(v => ({
+    ...v,
+    comissao: (v.valorConfirmado || 0) * (COMISSAO_PERCENTUAL / 100),
+  }));
 
   const rankingScans = db.prepare(`
     SELECT id, nome, negocio_nome, nfc_scans
@@ -102,7 +107,7 @@ router.get('/relatorios', (req, res) => {
     LIMIT 10
   `).all();
 
-  const resumoGeral = db.prepare(`
+  const resumoGeralBruto = db.prepare(`
     SELECT
       COUNT(*) AS totalVendas,
       SUM(CASE WHEN status = 'confirmado' THEN 1 ELSE 0 END) AS totalConfirmado,
@@ -110,6 +115,12 @@ router.get('/relatorios', (req, res) => {
       SUM(CASE WHEN status = 'confirmado' THEN valor ELSE 0 END) AS valorTotalConfirmado
     FROM vendas
   `).get();
+
+  const resumoGeral = {
+    ...resumoGeralBruto,
+    comissaoTotal: (resumoGeralBruto.valorTotalConfirmado || 0) * (COMISSAO_PERCENTUAL / 100),
+    comissaoPercentual: COMISSAO_PERCENTUAL,
+  };
 
   res.json({ vendedores, rankingScans, resumoGeral });
 });
