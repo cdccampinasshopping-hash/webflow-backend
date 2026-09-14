@@ -26,4 +26,5 @@ function exigirAdmin(req, res, next) {
   next();
 }
 
-module.exports = { exigirLogin, exigirAdmin };
+function exigirComercial(req, res, next) {
+  const usuario = db.prepare('SELECT is_comercial FROM usuarios WHERE id =
