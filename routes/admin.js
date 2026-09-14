@@ -54,4 +54,27 @@ router.patch('/clientes/:id/comercial', (req, res) => {
   res.json({ usuario: atualizado });
 });
 
+// Apaga um cliente e todos os dados ligados a ele
+router.delete('/clientes/:id', (req, res) => {
+  const { id } = req.params;
+
+  const usuario = db.prepare('SELECT id, is_admin FROM usuarios WHERE id = ?').get(id);
+  if (!usuario) {
+    return res.status(404).json({ erro: 'Usuário não encontrado.' });
+  }
+  if (usuario.is_admin) {
+    return res.status(403).json({ erro: 'Não é possível excluir uma conta administrativa.' });
+  }
+
+  const apagar = db.transaction((usuarioId) => {
+    db.prepare('DELETE FROM dados WHERE usuario_id = ?').run(usuarioId);
+    db.prepare('DELETE FROM suporte WHERE usuario_id = ?').run(usuarioId);
+    db.prepare('DELETE FROM vendas WHERE usuario_id = ? OR vendedor_id = ?').run(usuarioId, usuarioId);
+    db.prepare('DELETE FROM usuarios WHERE id = ?').run(usuarioId);
+  });
+  apagar(id);
+
+  res.json({ ok: true, id: Number(id) });
+});
+
 module.exports = router;
