@@ -11,6 +11,8 @@ const client = new MercadoPagoConfig({ accessToken: process.env.MERCADOPAGO_ACCE
 // A partir daqui, toda rota exige estar logado E ser do time comercial
 router.use(exigirLogin, exigirComercial);
 
+const COMISSAO_PERCENTUAL = Number(process.env.COMISSAO_PERCENTUAL || 30);
+
 const PLANOS_VALIDOS = ['basico', 'pro', 'premium'];
 const PRECOS = { basico: 80, pro: 200, premium: 300 };
 
