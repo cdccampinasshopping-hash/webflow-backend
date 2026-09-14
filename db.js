@@ -1,4 +1,3 @@
-// db.js
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
@@ -34,6 +33,11 @@ db.exec(`
 `);
 
 try { db.exec(`ALTER TABLE usuarios ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0`); }
+catch (e) { /* coluna já existe, tudo bem */ }
+
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN reset_token_hash TEXT`); }
+catch (e) { /* coluna já existe, tudo bem */ }
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN reset_token_expira TEXT`); }
 catch (e) { /* coluna já existe, tudo bem */ }
 
 db.exec(`
