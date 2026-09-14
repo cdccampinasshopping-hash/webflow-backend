@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 
+const db = require('./db');
 const authRoutes = require('./routes/auth');
 const dadosRoutes = require('./routes/dados');
 const suporteRoutes = require('./routes/suporte');
@@ -20,8 +21,29 @@ const app = express();
 app.use(cors({ origin: process.env.FRONTEND_ORIGIN || '*' }));
 app.use(express.json());
 
+const SITE_URL = process.env.SITE_URL || 'https://webflowservices.com';
+
 app.get('/', (req, res) => {
   res.json({ status: 'ok', servico: 'Webflow API' });
+});
+
+// Rota pública da placa NFC — sem login, é chamada pelo celular do cliente final.
+// Conta o scan e manda direto pra tela de avaliação do Google do negócio.
+app.get('/r/:codigo', (req, res) => {
+  const cliente = db.prepare('SELECT id, google_place_id FROM usuarios WHERE codigo_nfc = ?').get(req.params.codigo);
+
+  if (!cliente) {
+    return res.redirect(`${SITE_URL}/link-invalido.html`);
+  }
+
+  db.prepare('UPDATE usuarios SET nfc_scans = nfc_scans + 1 WHERE id = ?').run(cliente.id);
+
+  if (!cliente.google_place_id) {
+    return res.redirect(`${SITE_URL}/avaliacao-pendente.html`);
+  }
+
+  const urlGoogle = `https://search.google.com/local/writereview?placeid=${cliente.google_place_id}`;
+  res.redirect(302, urlGoogle);
 });
 
 app.use('/api/auth', authRoutes);
