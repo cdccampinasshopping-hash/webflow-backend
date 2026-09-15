@@ -12,10 +12,11 @@ function getCliente() {
   return cliente;
 }
 
-async function enviarEmail({ para, assunto, html }) {
+async function enviarEmail({ para, assunto, html, anexos }) {
   const c = getCliente();
   if (!c) {
     console.log(`[e-mail simulado] Para: ${para} | Assunto: ${assunto}\n${html}`);
+    if (anexos?.length) console.log(`[e-mail simulado] Anexos: ${anexos.map(a => a.filename).join(', ')}`);
     return;
   }
 
@@ -24,6 +25,7 @@ async function enviarEmail({ para, assunto, html }) {
     to: para,
     subject: assunto,
     html,
+    ...(anexos?.length ? { attachments: anexos } : {}),
   });
 
   if (error) {
