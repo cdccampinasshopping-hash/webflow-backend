@@ -11,6 +11,7 @@ const comercialRoutes = require('./routes/comercial');
 const pagamentosRoutes = require('./routes/pagamentos');
 const webhookPagamentosRoutes = require('./routes/webhook-pagamentos');
 const { exigirLogin, exigirAdmin } = require('./middleware/auth');
+const { iniciarAgendamentoBackup } = require('./jobs/backup');
 
 if (!process.env.JWT_SECRET) {
   console.error('ERRO: defina JWT_SECRET no arquivo .env antes de rodar o servidor (veja .env.example).');
@@ -62,4 +63,5 @@ app.use((req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Webflow API rodando na porta ${PORT}`);
+  iniciarAgendamentoBackup();
 });
