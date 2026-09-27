@@ -20,13 +20,31 @@ function gerarCodigoNfc() {
   return crypto.randomBytes(4).toString('hex');
 }
 
-// Extrai o Place ID de um link do Google Maps colado pelo comercial
-function extrairPlaceId(input) {
-  if (!input) return null;
-  const matchDireto = input.match(/place_id[:=]([A-Za-z0-9_-]+)/);
-  if (matchDireto) return matchDireto[1];
-  if (/^[A-Za-z0-9_-]{20,}$/.test(input.trim())) return input.trim();
-  return null;
+// Lê o que o comercial colou (Place ID, link de avaliação ou link do Maps)
+// e devolve { placeId, link }: placeId quando dá pra extrair, senão guarda o link inteiro.
+function interpretarLinkGoogle(input) {
+  const texto = String(input || '').trim();
+  if (!texto) return { placeId: null, link: null };
+
+  // Place ID puro (ex.: ChIJAQAAbxrIyJQRgTH76gTMV6I)
+  if (/^[A-Za-z0-9_-]{20,}$/.test(texto)) return { placeId: texto, link: null };
+
+  // placeid=... ou place_id=... / place_id:...
+  const matchParam = texto.match(/place_?id[:=]([A-Za-z0-9_-]{20,})/i);
+  if (matchParam) return { placeId: matchParam[1], link: null };
+
+  // Place ID solto dentro de qualquer link
+  const matchChij = texto.match(/(ChIJ[A-Za-z0-9_-]{15,})/);
+  if (matchChij) return { placeId: matchChij[1], link: null };
+
+  // Qualquer outro link (g.page/r/.../review, maps.app.goo.gl, google.com/maps...) é guardado como está
+  if (/^https?:\/\//i.test(texto)) return { placeId: null, link: texto };
+
+  return { placeId: null, link: null };
+}
+
+function baseUrl(req) {
+  return process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
 }
 
 // Cadastra um cliente novo + registra a venda (pendente se Pix, confirmada se dinheiro/cartão)
@@ -48,16 +66,16 @@ router.post('/cadastrar', async (req, res) => {
 
   const planoEscolhido = PLANOS_VALIDOS.includes(plano) ? plano : 'basico';
   const senha_hash = bcrypt.hashSync(senha, 10);
-  const placeId = extrairPlaceId(linkGoogle);
+  const { placeId, link: linkBruto } = interpretarLinkGoogle(linkGoogle);
   const valor = PRECOS[planoEscolhido];
 
   try {
     const resultado = db.prepare(`
-      INSERT INTO usuarios (nome, email, senha_hash, negocio_nome, segmento, plano, google_place_id, codigo_nfc)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO usuarios (nome, email, senha_hash, negocio_nome, segmento, plano, google_place_id, link_google, codigo_nfc)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       nome, email.toLowerCase().trim(), senha_hash, negocio_nome || null,
-      segmento || 'restaurante', planoEscolhido, placeId, gerarCodigoNfc()
+      segmento || 'restaurante', planoEscolhido, placeId, linkBruto, gerarCodigoNfc()
     );
 
     const clienteId = resultado.lastInsertRowid;
@@ -104,10 +122,19 @@ router.post('/cadastrar', async (req, res) => {
       }
     }
 
+    const { codigo_nfc } = db.prepare('SELECT codigo_nfc FROM usuarios WHERE id = ?').get(clienteId);
+    const base = baseUrl(req);
+
     res.status(201).json({
       cliente: { id: clienteId, nome, email, plano: planoEscolhido },
       venda: { id: vendaId, status: statusVenda, formaPagamento, valor },
       placeIdReconhecido: !!placeId,
+      linkGoogleSalvo: !!(placeId || linkBruto),
+      placa: {
+        codigo: codigo_nfc,
+        link: `${base}/r/${codigo_nfc}`,
+        qrCodeUrl: `${base}/qr/${codigo_nfc}.png`,
+      },
       pix,
     });
   } catch (e) {
@@ -119,21 +146,51 @@ router.post('/cadastrar', async (req, res) => {
   }
 });
 
-// Lista as vendas feitas pelo vendedor logado
+// Lista as vendas feitas pelo vendedor logado, já com o link dinâmico, QR e scans de cada placa
 router.get('/vendas', (req, res) => {
+  // Clientes antigos que ficaram sem código de placa ganham um agora
+  const semCodigo = db.prepare(`
+    SELECT DISTINCT u.id FROM vendas v JOIN usuarios u ON u.id = v.usuario_id
+    WHERE v.vendedor_id = ? AND (u.codigo_nfc IS NULL OR u.codigo_nfc = '')
+  `).all(req.usuarioId);
+  const setCodigo = db.prepare('UPDATE usuarios SET codigo_nfc = ? WHERE id = ?');
+  semCodigo.forEach(({ id }) => setCodigo.run(gerarCodigoNfc(), id));
+
+  const base = baseUrl(req);
   const vendas = db.prepare(`
-    SELECT v.id, v.forma_pagamento, v.status, v.valor, v.criado_em, v.confirmado_em,
-           u.nome AS cliente_nome, u.negocio_nome, u.email AS cliente_email
+    SELECT v.id, v.usuario_id AS cliente_id, v.forma_pagamento, v.status, v.valor, v.criado_em, v.confirmado_em,
+           u.nome AS cliente_nome, u.negocio_nome, u.email AS cliente_email,
+           u.codigo_nfc, u.google_place_id, u.link_google, u.nfc_scans
     FROM vendas v
     JOIN usuarios u ON u.id = v.usuario_id
     WHERE v.vendedor_id = ?
     ORDER BY v.criado_em DESC
-  `).all(req.usuarioId);
+  `).all(req.usuarioId).map(v => ({
+    ...v,
+    link_google_configurado: !!(v.google_place_id || v.link_google),
+    link_placa: `${base}/r/${v.codigo_nfc}`,
+    qr_code_url: `${base}/qr/${v.codigo_nfc}.png`,
+  }));
 
   const totalConfirmado = vendas.filter(v => v.status === 'confirmado').length;
   const totalPendente = vendas.filter(v => v.status === 'pendente').length;
+  const totalScans = vendas.reduce((soma, v) => soma + (v.nfc_scans || 0), 0);
 
-  res.json({ vendas, resumo: { totalConfirmado, totalPendente, total: vendas.length } });
+  res.json({ vendas, resumo: { totalConfirmado, totalPendente, total: vendas.length, totalScans } });
+});
+
+// Corrige/define o link do Google de um cliente que o próprio vendedor cadastrou
+router.patch('/clientes/:id/google', (req, res) => {
+  const venda = db.prepare('SELECT id FROM vendas WHERE usuario_id = ? AND vendedor_id = ?').get(req.params.id, req.usuarioId);
+  if (!venda) return res.status(404).json({ erro: 'Cliente não encontrado entre as suas vendas.' });
+
+  const { placeId, link } = interpretarLinkGoogle((req.body || {}).linkGoogle);
+  if (!placeId && !link) {
+    return res.status(400).json({ erro: 'Cole o Place ID ou o link de avaliação do Google (começando com https://).' });
+  }
+
+  db.prepare('UPDATE usuarios SET google_place_id = ?, link_google = ? WHERE id = ?').run(placeId, link, req.params.id);
+  res.json({ ok: true, placeIdReconhecido: !!placeId });
 });
 
 // Confirma o recebimento de uma venda em dinheiro/cartão (Pix confirma sozinho via webhook)

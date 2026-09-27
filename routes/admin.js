@@ -11,7 +11,7 @@ const COMISSAO_PERCENTUAL = Number(process.env.COMISSAO_PERCENTUAL || 30);
 
 router.get('/clientes', (req, res) => {
   const clientes = db.prepare(`
-    SELECT id, nome, email, negocio_nome, segmento, plano, is_comercial, codigo_nfc, google_place_id, nfc_scans, criado_em
+    SELECT id, nome, email, negocio_nome, segmento, plano, is_comercial, codigo_nfc, google_place_id, link_google, nfc_scans, criado_em
     FROM usuarios
     WHERE is_admin = 0
     ORDER BY criado_em DESC
@@ -54,6 +54,23 @@ router.patch('/clientes/:id/comercial', (req, res) => {
 
   const atualizado = db.prepare('SELECT id, nome, email, is_comercial FROM usuarios WHERE id = ?').get(id);
   res.json({ usuario: atualizado });
+});
+
+// Define/corrige o link do Google de qualquer cliente (Place ID, link de avaliação ou link do Maps)
+router.patch('/clientes/:id/google', (req, res) => {
+  const usuario = db.prepare('SELECT id FROM usuarios WHERE id = ?').get(req.params.id);
+  if (!usuario) return res.status(404).json({ erro: 'Usuário não encontrado.' });
+
+  const texto = String((req.body || {}).linkGoogle || '').trim();
+  let placeId = null, link = null;
+  const m = texto.match(/^[A-Za-z0-9_-]{20,}$/) ? [null, texto]
+    : (texto.match(/place_?id[:=]([A-Za-z0-9_-]{20,})/i) || texto.match(/(ChIJ[A-Za-z0-9_-]{15,})/));
+  if (m) placeId = m[1];
+  else if (/^https?:\/\//i.test(texto)) link = texto;
+  if (!placeId && !link) return res.status(400).json({ erro: 'Cole o Place ID ou o link de avaliação do Google.' });
+
+  db.prepare('UPDATE usuarios SET google_place_id = ?, link_google = ? WHERE id = ?').run(placeId, link, req.params.id);
+  res.json({ ok: true, placeIdReconhecido: !!placeId });
 });
 
 // Apaga um cliente e todos os dados ligados a ele
