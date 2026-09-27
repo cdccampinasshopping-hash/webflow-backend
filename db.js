@@ -47,6 +47,9 @@ try { db.exec(`ALTER TABLE usuarios ADD COLUMN google_place_id TEXT`); }
 catch (e) { /* coluna já existe, tudo bem */ }
 try { db.exec(`ALTER TABLE usuarios ADD COLUMN nfc_scans INTEGER NOT NULL DEFAULT 0`); }
 catch (e) { /* coluna já existe, tudo bem */ }
+// Link do Google colado pelo comercial (usado quando não dá pra extrair o Place ID dele)
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN link_google TEXT`); }
+catch (e) { /* coluna já existe, tudo bem */ }
 
 // Marca quem é do time comercial (etiquetado manualmente pelo admin)
 try { db.exec(`ALTER TABLE usuarios ADD COLUMN is_comercial INTEGER NOT NULL DEFAULT 0`); }

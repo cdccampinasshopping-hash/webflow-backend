@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const QRCode = require('qrcode');
 
 const db = require('./db');
 const authRoutes = require('./routes/auth');
@@ -19,6 +20,7 @@ if (!process.env.JWT_SECRET) {
 }
 
 const app = express();
+app.set('trust proxy', 1); // Railway fica atrás de proxy: garante https nos links gerados
 app.use(cors({ origin: process.env.FRONTEND_ORIGIN || '*' }));
 app.use(express.json());
 
@@ -31,7 +33,7 @@ app.get('/', (req, res) => {
 // Rota pública da placa NFC — sem login, é chamada pelo celular do cliente final.
 // Conta o scan e manda direto pra tela de avaliação do Google do negócio.
 app.get('/r/:codigo', (req, res) => {
-  const cliente = db.prepare('SELECT id, google_place_id FROM usuarios WHERE codigo_nfc = ?').get(req.params.codigo);
+  const cliente = db.prepare('SELECT id, google_place_id, link_google FROM usuarios WHERE codigo_nfc = ?').get(req.params.codigo);
 
   if (!cliente) {
     return res.redirect(`${SITE_URL}/link-invalido.html`);
@@ -40,12 +42,32 @@ app.get('/r/:codigo', (req, res) => {
   db.prepare('UPDATE usuarios SET nfc_scans = nfc_scans + 1 WHERE id = ?').run(cliente.id);
   db.prepare('INSERT INTO scans_log (usuario_id) VALUES (?)').run(cliente.id);
 
-  if (!cliente.google_place_id) {
-    return res.redirect(`${SITE_URL}/avaliacao-pendente.html`);
+  if (cliente.google_place_id) {
+    return res.redirect(302, `https://search.google.com/local/writereview?placeid=${cliente.google_place_id}`);
   }
+  if (cliente.link_google) {
+    return res.redirect(302, cliente.link_google);
+  }
+  return res.redirect(`${SITE_URL}/avaliacao-pendente.html`);
+});
 
-  const urlGoogle = `https://search.google.com/local/writereview?placeid=${cliente.google_place_id}`;
-  res.redirect(302, urlGoogle);
+// QR Code público da placa (PNG) — aponta pro link dinâmico /r/:codigo, então cada leitura conta.
+// Não conta scan aqui: só gera a imagem pra imprimir.
+app.get('/qr/:codigo.png', async (req, res) => {
+  const cliente = db.prepare('SELECT id FROM usuarios WHERE codigo_nfc = ?').get(req.params.codigo);
+  if (!cliente) return res.status(404).json({ erro: 'Código não encontrado.' });
+
+  const base = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
+  try {
+    const png = await QRCode.toBuffer(`${base}/r/${req.params.codigo}`, { width: 600, margin: 2 });
+    res.set('Content-Type', 'image/png');
+    res.set('Cache-Control', 'public, max-age=86400');
+    if (req.query.download) res.set('Content-Disposition', `attachment; filename="placa-${req.params.codigo}.png"`);
+    res.send(png);
+  } catch (e) {
+    console.error('Erro ao gerar QR', e);
+    res.status(500).json({ erro: 'Não foi possível gerar o QR Code.' });
+  }
 });
 
 app.use('/api/auth', authRoutes);
