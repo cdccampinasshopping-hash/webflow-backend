@@ -176,7 +176,13 @@ router.get('/vendas', (req, res) => {
   const totalPendente = vendas.filter(v => v.status === 'pendente').length;
   const totalScans = vendas.reduce((soma, v) => soma + (v.nfc_scans || 0), 0);
 
-  res.json({ vendas, resumo: { totalConfirmado, totalPendente, total: vendas.length, totalScans } });
+  const valorConfirmado = vendas.filter(v => v.status === 'confirmado').reduce((soma, v) => soma + (v.valor || 0), 0);
+  const comissao = Math.round(valorConfirmado * COMISSAO_PERCENTUAL) / 100;
+
+  res.json({ vendas, resumo: {
+    totalConfirmado, totalPendente, total: vendas.length, totalScans,
+    comissao, comissaoPercentual: COMISSAO_PERCENTUAL,
+  } });
 });
 
 // Corrige/define o link do Google de um cliente que o próprio vendedor cadastrou
