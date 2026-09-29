@@ -97,4 +97,21 @@ db.exec(`
   )
 `);
 
+// Avaliações feitas pela placa (tela rápida antes de seguir pro Google).
+// Formam o mural/portfólio do lojista. "visivel" = aparece no portfólio público.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS avaliacoes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    usuario_id INTEGER NOT NULL,
+    nota INTEGER NOT NULL,
+    comentario TEXT,
+    nome TEXT,
+    visivel INTEGER NOT NULL DEFAULT 1,
+    ip_hash TEXT,
+    criado_em TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+  )
+`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_avaliacoes_usuario ON avaliacoes(usuario_id, criado_em)`);
+
 module.exports = db;
