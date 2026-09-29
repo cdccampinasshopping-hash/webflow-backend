@@ -11,6 +11,7 @@ const adminRoutes = require('./routes/admin');
 const comercialRoutes = require('./routes/comercial');
 const pagamentosRoutes = require('./routes/pagamentos');
 const webhookPagamentosRoutes = require('./routes/webhook-pagamentos');
+const avaliacoesRoutes = require('./routes/avaliacoes');
 const { exigirLogin, exigirAdmin } = require('./middleware/auth');
 const { iniciarAgendamentoBackup } = require('./jobs/backup');
 
@@ -41,6 +42,12 @@ app.get('/r/:codigo', (req, res) => {
 
   db.prepare('UPDATE usuarios SET nfc_scans = nfc_scans + 1 WHERE id = ?').run(cliente.id);
   db.prepare('INSERT INTO scans_log (usuario_id) VALUES (?)').run(cliente.id);
+
+  // Primeiro abre a tela rápida da loja (nota + comentário, que vão pro mural do lojista);
+  // de lá o cliente segue pro Google, qualquer que seja a nota.
+  if (process.env.PLACA_DIRETO_GOOGLE !== '1') {
+    return res.redirect(302, `${SITE_URL}/avaliar.html?c=${encodeURIComponent(req.params.codigo)}`);
+  }
 
   if (cliente.google_place_id) {
     return res.redirect(302, `https://search.google.com/local/writereview?placeid=${cliente.google_place_id}`);
@@ -77,6 +84,8 @@ app.use('/api/admin', exigirLogin, exigirAdmin, adminRoutes);
 app.use('/api/comercial', comercialRoutes);
 app.use('/api/pagamentos/webhook', webhookPagamentosRoutes);
 app.use('/api/pagamentos', exigirLogin, pagamentosRoutes);
+app.use('/api/publico', avaliacoesRoutes.publico);
+app.use('/api/avaliacoes', avaliacoesRoutes.lojista);
 
 app.use((req, res) => {
   res.status(404).json({ erro: 'Rota não encontrada.' });

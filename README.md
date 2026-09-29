@@ -143,3 +143,14 @@ só mostrar "Cardápio 3D" pra quem está no Premium.
 - Cobrança automática (ex: Stripe ou Mercado Pago) integrada ao upgrade de plano.
 - Painel administrativo seu (dono do Webflow) pra ver todos os clientes e planos.
 - Trocar SQLite por Postgres se a base de clientes crescer muito...
+
+
+## Mural de avaliações (placa + Google)
+
+- Ao aproximar o celular da placa (`/r/:codigo`), o cliente abre `avaliar.html` no site: dá a nota, pode deixar um comentário e segue pro Google (sempre, qualquer que seja a nota — o Google proíbe filtrar só as boas).
+- Toda avaliação feita ali fica salva na tabela `avaliacoes` e aparece no painel do lojista, em **Avaliações**.
+- O lojista escolhe quais aparecem no portfólio público (`portfolio.html?c=CODIGO`). Por padrão, 4 e 5 estrelas entram.
+- **Opcional:** configure `GOOGLE_PLACES_API_KEY` (Google Cloud → Places API (New)) pra mostrar também a nota, o total e as avaliações em destaque do Google. Só funciona pra lojas com Place ID salvo.
+- Pra voltar ao comportamento antigo (placa direto pro Google), defina `PLACA_DIRETO_GOOGLE=1`.
+
+Rotas: `GET /api/publico/loja/:codigo`, `POST /api/publico/loja/:codigo/avaliacoes`, `GET /api/publico/portfolio/:codigo`, `GET /api/avaliacoes` (login), `PATCH /api/avaliacoes/:id` (login).
