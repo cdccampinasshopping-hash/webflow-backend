@@ -1,6 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { exigirLogin, exigirAdmin } = require('../middleware/auth');
+const { enviarRelatorio, mesAnterior, mesAtualBrasilia } = require('../jobs/relatorio-mensal');
 
 const router = express.Router();
 
@@ -97,6 +98,24 @@ router.delete('/clientes/:id', (req, res) => {
 });
 
 // Relatório consolidado: vendas por vendedor + ranking de clientes por scans
+// Envia o relatório mensal (do mês passado) de um cliente: pra você testar ou pro próprio cliente
+router.post('/clientes/:id/relatorio', async (req, res) => {
+  const { destino, mes } = req.body || {};
+  const mesEscolhido = /^\d{4}-\d{2}$/.test(mes || '') ? mes : mesAnterior(mesAtualBrasilia());
+  let paraOutro = null;
+  if (destino !== 'cliente') {
+    const admin = db.prepare('SELECT email FROM usuarios WHERE id = ?').get(req.usuarioId);
+    paraOutro = admin.email;
+  }
+  try {
+    const r = await enviarRelatorio(req.params.id, mesEscolhido, paraOutro);
+    res.json({ ok: true, para: paraOutro || r.usuario.email, mes: mesEscolhido });
+  } catch (e) {
+    console.error('Erro ao enviar relatório', e);
+    res.status(e.message === 'Cliente não encontrado.' ? 404 : 500).json({ erro: e.message || 'Não foi possível enviar o relatório.' });
+  }
+});
+
 router.get('/relatorios', (req, res) => {
   const vendedores = db.prepare(`
     SELECT

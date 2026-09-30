@@ -166,3 +166,10 @@ Rotas: `GET /api/publico/loja/:codigo`, `POST /api/publico/loja/:codigo/avaliaco
 ## LGPD
 
 - O cadastro exige aceitar os Termos de Uso e a Política de Privacidade (`privacidade.html` e `termos.html` no site). A data do aceite fica em `usuarios.aceite_termos_em`.
+
+## Relatório mensal do lojista
+
+- Todo dia 1º (com tolerância até o dia 3), cada lojista com placa recebe por e-mail o resumo do mês anterior: leituras da placa, avaliações, nota média (com comparação com o mês anterior), até 3 melhores comentários e uma dica prática. Arquivo: `jobs/relatorio-mensal.js`.
+- Não repete envio (coluna `usuarios.relatorio_enviado_mes`), e não envia para admin nem para o time comercial.
+- No painel admin, em **Clientes**, os botões **Relatório (teste)** (manda pro seu e-mail) e **Enviar relatório** (manda pro cliente) disparam o relatório do mês passado na hora. Rota: `POST /api/admin/clientes/:id/relatorio` com `{ destino: 'admin' | 'cliente' }`.
+- Precisa de `RESEND_API_KEY` configurada. Para chegar na caixa de entrada dos clientes (e não só na sua), verifique um domínio no Resend e defina `EMAIL_FROM`.
