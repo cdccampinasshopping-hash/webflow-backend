@@ -11,6 +11,9 @@ function destinoGoogle(loja) {
   return null;
 }
 
+// Placa indo direto pro Google (sem a tela rápida da loja)
+const modoDireto = () => process.env.PLACA_DIRETO_GOOGLE === '1';
+
 function resumo(usuarioId) {
   const r = db.prepare(`
     SELECT COUNT(*) AS total, ROUND(AVG(nota), 1) AS media,
@@ -30,7 +33,7 @@ const publico = express.Router();
 publico.get('/loja/:codigo', (req, res) => {
   const loja = db.prepare('SELECT negocio_nome, nome, google_place_id, link_google FROM usuarios WHERE codigo_nfc = ?').get(req.params.codigo);
   if (!loja) return res.status(404).json({ erro: 'Loja não encontrada.' });
-  res.json({ negocio: loja.negocio_nome || loja.nome, destinoGoogle: destinoGoogle(loja) });
+  res.json({ negocio: loja.negocio_nome || loja.nome, destinoGoogle: destinoGoogle(loja), direto: modoDireto() });
 });
 
 // Cliente final registra a avaliação (antes de seguir pro Google)
@@ -63,7 +66,7 @@ publico.post('/loja/:codigo/avaliacoes', (req, res) => {
 
 // Portfólio público da loja
 publico.get('/portfolio/:codigo', async (req, res) => {
-  const loja = db.prepare('SELECT id, negocio_nome, nome, segmento, google_place_id FROM usuarios WHERE codigo_nfc = ?').get(req.params.codigo);
+  const loja = db.prepare('SELECT id, negocio_nome, nome, segmento, google_place_id, link_google FROM usuarios WHERE codigo_nfc = ?').get(req.params.codigo);
   if (!loja) return res.status(404).json({ erro: 'Loja não encontrada.' });
 
   const avaliacoes = db.prepare(`
@@ -78,6 +81,8 @@ publico.get('/portfolio/:codigo', async (req, res) => {
     resumo: resumo(loja.id),
     avaliacoes,
     google: await buscarGoogle(loja.google_place_id),
+    destinoGoogle: destinoGoogle(loja),
+    direto: modoDireto(),
   });
 });
 
@@ -99,6 +104,7 @@ lojista.get('/', async (req, res) => {
     codigo: u.codigo_nfc,
     scans: u.nfc_scans || 0,
     googleLigado: !!(u.google_place_id || u.link_google),
+    direto: modoDireto(),
     resumo: resumo(u.id),
     avaliacoes,
     google: await buscarGoogle(u.google_place_id),
