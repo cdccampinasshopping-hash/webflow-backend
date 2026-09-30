@@ -173,3 +173,14 @@ Rotas: `GET /api/publico/loja/:codigo`, `POST /api/publico/loja/:codigo/avaliaco
 - Não repete envio (coluna `usuarios.relatorio_enviado_mes`), e não envia para admin nem para o time comercial.
 - No painel admin, em **Clientes**, os botões **Relatório (teste)** (manda pro seu e-mail) e **Enviar relatório** (manda pro cliente) disparam o relatório do mês passado na hora. Rota: `POST /api/admin/clientes/:id/relatorio` com `{ destino: 'admin' | 'cliente' }`.
 - Precisa de `RESEND_API_KEY` configurada. Para chegar na caixa de entrada dos clientes (e não só na sua), verifique um domínio no Resend e defina `EMAIL_FROM`.
+
+
+## Placas em lote
+
+- Admin → **Placas**: gera um lote (1 a 500) de placas com códigos únicos de 6 caracteres, ainda sem loja.
+- **Imprimir** abre `imprimir-placas.html` no site: uma placa por página de 10×15 cm, pronta pra salvar em PDF, e a lista CSV com o link de cada placa pra gravar no chip NFC.
+- Na venda, o comercial digita o código impresso na placa (cadastro do cliente ou botão "Placa" em Minhas vendas). O admin também pode ativar, mover ou desvincular.
+- Placa livre escaneada abre `placa-nao-ativada.html`. Uma loja pode ter várias placas; todas contam scans e avaliações pra mesma loja.
+
+Rotas (admin): `POST /api/admin/placas/lote`, `GET /api/admin/placas/lotes`, `GET /api/admin/placas?lote=`, `PATCH /api/admin/placas/:codigo`, `DELETE /api/admin/placas/lote/:lote`.
+Rota (comercial): `PATCH /api/comercial/clientes/:id/placa`. O QR aceita `?w=1200&margem=0` pra impressão.

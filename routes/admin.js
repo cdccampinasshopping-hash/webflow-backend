@@ -1,5 +1,6 @@
 const express = require('express');
 const db = require('../db');
+const { gerarCodigoUnico, buscarPlaca, vincularPlaca, normalizarCodigo } = require('../placas');
 const { exigirLogin, exigirAdmin } = require('../middleware/auth');
 const { enviarRelatorio, mesAnterior, mesAtualBrasilia } = require('../jobs/relatorio-mensal');
 
@@ -90,6 +91,7 @@ router.delete('/clientes/:id', (req, res) => {
     db.prepare('DELETE FROM dados WHERE usuario_id = ?').run(usuarioId);
     db.prepare('DELETE FROM suporte WHERE usuario_id = ?').run(usuarioId);
     db.prepare('DELETE FROM vendas WHERE usuario_id = ? OR vendedor_id = ?').run(usuarioId, usuarioId);
+    db.prepare('UPDATE placas SET usuario_id = NULL, ativada_em = NULL WHERE usuario_id = ?').run(usuarioId);
     db.prepare('DELETE FROM usuarios WHERE id = ?').run(usuarioId);
   });
   apagar(id);
@@ -184,6 +186,88 @@ router.get('/relatorios', (req, res) => {
   `).all();
 
   res.json({ vendedores, rankingScans, resumoGeral, scansPorDia, scansPorSemana, scansPorMes });
+});
+
+
+/* ------------------------- PLACAS EM LOTE ------------------------- */
+function baseUrl(req) {
+  return process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
+}
+
+// Gera um lote de placas "em branco" (códigos únicos, ainda sem loja)
+router.post('/placas/lote', (req, res) => {
+  const quantidade = parseInt((req.body || {}).quantidade, 10);
+  if (!(quantidade >= 1 && quantidade <= 500)) {
+    return res.status(400).json({ erro: 'Escolha uma quantidade entre 1 e 500 placas.' });
+  }
+  const hoje = new Date().toISOString().slice(0, 10);
+  const doDia = db.prepare('SELECT COUNT(DISTINCT lote) AS n FROM placas WHERE lote LIKE ?').get(`${hoje}%`).n;
+  const lote = `${hoje}-${String(doDia + 1).padStart(2, '0')}`;
+
+  const inserir = db.prepare('INSERT INTO placas (codigo, lote) VALUES (?, ?)');
+  const codigos = [];
+  const criar = db.transaction(() => {
+    for (let i = 0; i < quantidade; i++) {
+      const c = gerarCodigoUnico();
+      inserir.run(c, lote);
+      codigos.push(c);
+    }
+  });
+  criar();
+  res.status(201).json({ lote, quantidade: codigos.length, codigos });
+});
+
+// Resumo dos lotes
+router.get('/placas/lotes', (req, res) => {
+  const lotes = db.prepare(`
+    SELECT lote, MIN(criado_em) AS criado_em, COUNT(*) AS total,
+           SUM(CASE WHEN usuario_id IS NOT NULL THEN 1 ELSE 0 END) AS ativadas
+    FROM placas GROUP BY lote ORDER BY lote DESC
+  `).all();
+  res.json({ lotes });
+});
+
+// Placas de um lote (ou todas), com a loja vinculada
+router.get('/placas', (req, res) => {
+  const base = baseUrl(req);
+  const filtro = req.query.lote ? 'WHERE p.lote = ?' : '';
+  const params = req.query.lote ? [req.query.lote] : [];
+  const placas = db.prepare(`
+    SELECT p.codigo, p.lote, p.usuario_id, p.criado_em, p.ativada_em,
+           u.negocio_nome, u.nome AS cliente_nome, u.nfc_scans
+    FROM placas p LEFT JOIN usuarios u ON u.id = p.usuario_id
+    ${filtro}
+    ORDER BY p.criado_em, p.codigo
+  `).all(...params).map((p) => ({
+    ...p,
+    link: `${base}/r/${p.codigo}`,
+    qr: `${base}/qr/${p.codigo}.png`,
+  }));
+  res.json({ placas, base });
+});
+
+// Vincula (ou desvincula, com usuario_id null) uma placa a uma loja
+router.patch('/placas/:codigo', (req, res) => {
+  const placa = buscarPlaca(req.params.codigo);
+  if (!placa) return res.status(404).json({ erro: 'Placa não encontrada.' });
+  const usuarioId = (req.body || {}).usuario_id;
+
+  if (usuarioId === null || usuarioId === '' || usuarioId === undefined) {
+    db.prepare('UPDATE placas SET usuario_id = NULL, ativada_em = NULL WHERE codigo = ?').run(placa.codigo);
+    return res.json({ ok: true, codigo: placa.codigo, usuario_id: null });
+  }
+  const loja = db.prepare('SELECT id FROM usuarios WHERE id = ? AND is_admin = 0').get(usuarioId);
+  if (!loja) return res.status(404).json({ erro: 'Loja não encontrada.' });
+
+  // O admin pode mover uma placa de uma loja pra outra
+  db.prepare(`UPDATE placas SET usuario_id = ?, ativada_em = datetime('now') WHERE codigo = ?`).run(loja.id, placa.codigo);
+  res.json({ ok: true, codigo: placa.codigo, usuario_id: loja.id });
+});
+
+// Apaga placas livres de um lote (ex.: gerou a mais por engano). Placas ativadas nunca são apagadas.
+router.delete('/placas/lote/:lote', (req, res) => {
+  const r = db.prepare('DELETE FROM placas WHERE lote = ? AND usuario_id IS NULL').run(req.params.lote);
+  res.json({ ok: true, apagadas: r.changes });
 });
 
 module.exports = router;

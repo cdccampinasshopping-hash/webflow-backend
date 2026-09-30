@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const db = require('../db');
 const { exigirLogin } = require('../middleware/auth');
 const { buscarGoogle } = require('../google');
+const { lojaPorCodigo } = require('../placas');
 
 // Pra onde mandar o cliente no Google depois da tela rápida da placa
 function destinoGoogle(loja) {
@@ -32,14 +33,14 @@ const publico = express.Router();
 
 // Dados mínimos pra tela de avaliação da placa
 publico.get('/loja/:codigo', (req, res) => {
-  const loja = db.prepare('SELECT negocio_nome, nome, google_place_id, link_google FROM usuarios WHERE codigo_nfc = ?').get(req.params.codigo);
+  const loja = lojaPorCodigo(req.params.codigo, 'negocio_nome, nome, google_place_id, link_google');
   if (!loja) return res.status(404).json({ erro: 'Loja não encontrada.' });
   res.json({ negocio: loja.negocio_nome || loja.nome, destinoGoogle: destinoGoogle(loja), direto: modoDireto() });
 });
 
 // Cliente final registra a avaliação (antes de seguir pro Google)
 publico.post('/loja/:codigo/avaliacoes', (req, res) => {
-  const loja = db.prepare('SELECT id, google_place_id, link_google FROM usuarios WHERE codigo_nfc = ?').get(req.params.codigo);
+  const loja = lojaPorCodigo(req.params.codigo, 'id, google_place_id, link_google');
   if (!loja) return res.status(404).json({ erro: 'Loja não encontrada.' });
 
   const { nota, comentario, nome } = req.body || {};
@@ -67,7 +68,7 @@ publico.post('/loja/:codigo/avaliacoes', (req, res) => {
 
 // Portfólio público da loja
 publico.get('/portfolio/:codigo', async (req, res) => {
-  const loja = db.prepare('SELECT id, negocio_nome, nome, segmento, google_place_id, link_google FROM usuarios WHERE codigo_nfc = ?').get(req.params.codigo);
+  const loja = lojaPorCodigo(req.params.codigo, 'id, negocio_nome, nome, segmento, google_place_id, link_google');
   if (!loja) return res.status(404).json({ erro: 'Loja não encontrada.' });
 
   const avaliacoes = db.prepare(`

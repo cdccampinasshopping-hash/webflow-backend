@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const { MercadoPagoConfig, Payment } = require('mercadopago');
 const db = require('../db');
+const { buscarPlaca, vincularPlaca, codigosDaLoja } = require('../placas');
 const { exigirLogin, exigirComercial } = require('../middleware/auth');
 
 const router = express.Router();
@@ -51,7 +52,7 @@ function baseUrl(req) {
 router.post('/cadastrar', async (req, res) => {
   const {
     nome, email, senha, negocio_nome, segmento, plano,
-    linkGoogle, formaPagamento
+    linkGoogle, formaPagamento, codigoPlaca
   } = req.body || {};
 
   if (!nome || !email || !senha) {
@@ -62,6 +63,13 @@ router.post('/cadastrar', async (req, res) => {
   }
   if (!['pix', 'dinheiro', 'cartao'].includes(formaPagamento)) {
     return res.status(400).json({ erro: 'Forma de pagamento inválida. Use pix, dinheiro ou cartao.' });
+  }
+
+  // Placa impressa em lote (opcional): confere antes de criar o cliente
+  if (codigoPlaca) {
+    const placa = buscarPlaca(codigoPlaca);
+    if (!placa) return res.status(400).json({ erro: 'Código de placa não encontrado. Confira as letras e números impressos na placa.' });
+    if (placa.usuario_id) return res.status(400).json({ erro: 'Essa placa já está ativada em outra loja.' });
   }
 
   const planoEscolhido = PLANOS_VALIDOS.includes(plano) ? plano : 'basico';
@@ -79,6 +87,7 @@ router.post('/cadastrar', async (req, res) => {
     );
 
     const clienteId = resultado.lastInsertRowid;
+    const placaVinculada = codigoPlaca ? vincularPlaca(codigoPlaca, clienteId) : null;
 
     // Pix fica pendente até o webhook confirmar; dinheiro/cartão já libera na hora
     const statusVenda = formaPagamento === 'pix' ? 'pendente' : 'confirmado';
@@ -135,6 +144,7 @@ router.post('/cadastrar', async (req, res) => {
         link: `${base}/r/${codigo_nfc}`,
         qrCodeUrl: `${base}/qr/${codigo_nfc}.png`,
       },
+      placaLote: placaVinculada && placaVinculada.ok ? placaVinculada.codigo : null,
       pix,
     });
   } catch (e) {
@@ -170,6 +180,7 @@ router.get('/vendas', (req, res) => {
     link_google_configurado: !!(v.google_place_id || v.link_google),
     link_placa: `${base}/r/${v.codigo_nfc}`,
     qr_code_url: `${base}/qr/${v.codigo_nfc}.png`,
+    placas_lote: codigosDaLoja(v.cliente_id),
   }));
 
   const totalConfirmado = vendas.filter(v => v.status === 'confirmado').length;
@@ -266,6 +277,16 @@ router.post('/vendas/:id/gerar-pix', async (req, res) => {
     console.error('Erro ao gerar novo Pix', erroPix);
     res.status(500).json({ erro: 'Não foi possível gerar o Pix agora. Tente novamente em instantes.' });
   }
+});
+
+
+// Ativa uma placa impressa em lote num cliente que o próprio vendedor cadastrou
+router.patch('/clientes/:id/placa', (req, res) => {
+  const venda = db.prepare('SELECT id FROM vendas WHERE usuario_id = ? AND vendedor_id = ?').get(req.params.id, req.usuarioId);
+  if (!venda) return res.status(404).json({ erro: 'Cliente não encontrado entre as suas vendas.' });
+  const r = vincularPlaca((req.body || {}).codigoPlaca, Number(req.params.id));
+  if (r.erro) return res.status(400).json({ erro: r.erro });
+  res.json({ ok: true, codigo: r.codigo, placas: codigosDaLoja(Number(req.params.id)) });
 });
 
 module.exports = router;

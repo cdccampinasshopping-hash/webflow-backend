@@ -140,4 +140,20 @@ migrarUmaVez('2026-09-30-google-casa-do-celular', () => {
     .run('ChIJAQAAbxrIyJQRgTH76gTMV6I', 'https://search.google.com/local/writereview?placeid=ChIJAQAAbxrIyJQRgTH76gTMV6I', '4ccc0b2f');
 });
 
+
+// Placas impressas em lote: cada uma tem um código único e fica "livre" até o comercial
+// ou o admin vincular a uma loja. Uma loja pode ter várias placas (ex.: uma por mesa).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS placas (
+    codigo TEXT PRIMARY KEY,
+    lote TEXT NOT NULL,
+    usuario_id INTEGER,
+    criado_em TEXT DEFAULT (datetime('now')),
+    ativada_em TEXT,
+    FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+  )
+`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_placas_lote ON placas(lote)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_placas_usuario ON placas(usuario_id)`);
+
 module.exports = db;
