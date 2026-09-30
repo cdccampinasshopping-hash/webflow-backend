@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const db = require('../db');
-const { enviarEmail } = require('../email');
+const { enviarEmail, emailInterno } = require('../email');
 
 // Cria uma cópia consistente do banco de dados (segura mesmo com o servidor em uso)
 async function criarArquivoBackup() {
@@ -13,9 +13,9 @@ async function criarArquivoBackup() {
 
 // Gera o backup e envia por e-mail pro admin, como anexo
 async function enviarBackupPorEmail() {
-  const adminEmail = process.env.ADMIN_EMAIL;
+  const adminEmail = emailInterno();
   if (!adminEmail) {
-    console.warn('ADMIN_EMAIL não configurado — não foi possível enviar o backup automático.');
+    console.warn('EMAIL_AVISOS/ADMIN_EMAIL não configurado — não foi possível enviar o backup automático.');
     return;
   }
 

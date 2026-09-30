@@ -1,5 +1,5 @@
 const db = require('../db');
-const { enviarEmail } = require('../email');
+const { enviarEmail, emailInterno } = require('../email');
 
 // Cada mensalidade paga libera o Premium por 30 dias + 5 de tolerância
 // (dá tempo do Mercado Pago tentar cobrar de novo se o cartão falhar).
@@ -69,7 +69,7 @@ async function verificarAssinaturas() {
       <p>Oi, ${u.nome}!</p>
       <p>Não recebemos a mensalidade do Premium, então sua conta voltou para o plano Pró. Nenhum dado foi apagado.</p>
       <p>Assim que a mensalidade for paga, tudo volta a funcionar na hora: <a href="${SITE_URL}/webflow.html">abrir o painel</a>.</p>`);
-    await avisar(process.env.ADMIN_EMAIL, `Premium vencido: ${u.negocio_nome || u.nome}`, `
+    await avisar(emailInterno(), `Premium vencido: ${u.negocio_nome || u.nome}`, `
       <p>O cliente <b>${u.negocio_nome || u.nome}</b> (${u.email}) ficou sem pagar a mensalidade e foi rebaixado para ${PLANO_SEM_MENSALIDADE}.</p>`);
   }
 }

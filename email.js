@@ -34,4 +34,10 @@ async function enviarEmail({ para, assunto, html, anexos }) {
   }
 }
 
-module.exports = { enviarEmail };
+// Pra onde vão os e-mails internos (backup, avisos de venda/contratação).
+// EMAIL_AVISOS permite usar um endereço diferente do login de admin (ADMIN_EMAIL).
+function emailInterno() {
+  return process.env.EMAIL_AVISOS || process.env.ADMIN_EMAIL || null;
+}
+
+module.exports = { enviarEmail, emailInterno };

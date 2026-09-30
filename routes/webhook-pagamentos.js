@@ -3,11 +3,11 @@ const { MercadoPagoConfig, Payment, PreApproval } = require('mercadopago');
 const db = require('../db');
 const { estenderPremium, registrarAssinatura } = require('../jobs/assinaturas');
 const { enviarReciboVenda, enviarReciboPlano } = require('../recibo');
-const { enviarEmail } = require('../email');
+const { enviarEmail, emailInterno } = require('../email');
 
 async function avisarAdmin(assunto, html) {
-  if (!process.env.ADMIN_EMAIL) return;
-  try { await enviarEmail({ para: process.env.ADMIN_EMAIL, assunto, html }); }
+  if (!emailInterno()) return;
+  try { await enviarEmail({ para: emailInterno(), assunto, html }); }
   catch (e) { console.error('Não foi possível avisar o admin', e.message); }
 }
 
