@@ -323,4 +323,51 @@ router.get('/pix-teste/:id', async (req, res) => {
   res.json({ id: t.id, statusMercadoPago, webhookRecebido: !!t.confirmado_por_webhook, pagoEm: t.pago_em });
 });
 
+
+/* ------------------------- FECHAMENTO DE COMISSÃO ------------------------- */
+// Vendas confirmadas no mês (horário de Brasília), por vendedor, com a comissão a pagar
+router.get('/comissoes', (req, res) => {
+  const mes = /^\d{4}-\d{2}$/.test(req.query.mes || '') ? req.query.mes : null;
+  if (!mes) return res.status(400).json({ erro: 'Informe o mês no formato AAAA-MM.' });
+  const vendas = db.prepare(`
+    SELECT v.id, v.valor, v.forma_pagamento, v.confirmado_em, v.vendedor_id,
+           vend.nome AS vendedor_nome, vend.email AS vendedor_email,
+           u.negocio_nome, u.nome AS cliente_nome, u.plano
+    FROM vendas v
+    JOIN usuarios vend ON vend.id = v.vendedor_id
+    JOIN usuarios u ON u.id = v.usuario_id
+    WHERE v.status = 'confirmado' AND strftime('%Y-%m', v.confirmado_em, '-3 hours') = ?
+    ORDER BY vend.nome, v.confirmado_em
+  `).all(mes);
+  const porVendedor = {};
+  vendas.forEach((v) => {
+    const k = v.vendedor_id;
+    porVendedor[k] = porVendedor[k] || { vendedor: v.vendedor_nome, email: v.vendedor_email, vendas: 0, valor: 0, comissao: 0 };
+    porVendedor[k].vendas += 1;
+    porVendedor[k].valor += v.valor || 0;
+  });
+  const vendedores = Object.values(porVendedor).map((x) => ({ ...x, comissao: Math.round(x.valor * COMISSAO_PERCENTUAL) / 100 }));
+  res.json({ mes, comissaoPercentual: COMISSAO_PERCENTUAL, vendedores, vendas });
+});
+
+/* ------------------------- PEDIDOS DE PLACAS EXTRAS ------------------------- */
+router.get('/pedidos-placas', (req, res) => {
+  const pedidos = db.prepare(`
+    SELECT p.id, p.quantidade, p.valor, p.status, p.pago_em, p.entregue_em, p.usuario_id,
+           u.negocio_nome, u.nome, u.email, u.telefone
+    FROM pedidos_placas p JOIN usuarios u ON u.id = p.usuario_id
+    WHERE p.status IN ('pago', 'entregue')
+    ORDER BY CASE p.status WHEN 'pago' THEN 0 ELSE 1 END, p.pago_em DESC
+    LIMIT 100
+  `).all();
+  res.json({ pedidos });
+});
+
+router.patch('/pedidos-placas/:id', (req, res) => {
+  const r = db.prepare(`UPDATE pedidos_placas SET status = 'entregue', entregue_em = ? WHERE id = ? AND status = 'pago'`)
+    .run(new Date().toISOString(), req.params.id);
+  if (!r.changes) return res.status(404).json({ erro: 'Pedido não encontrado ou já entregue.' });
+  res.json({ ok: true });
+});
+
 module.exports = router;

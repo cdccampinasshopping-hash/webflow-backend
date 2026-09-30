@@ -30,6 +30,16 @@ app.use(express.json());
 
 const SITE_URL = process.env.SITE_URL || 'https://webflowservices.com';
 
+// Pra monitor de disponibilidade: confere que o servidor e o banco respondem
+app.get('/health', (req, res) => {
+  try {
+    db.prepare('SELECT 1').get();
+    res.json({ status: 'ok' });
+  } catch (e) {
+    res.status(500).json({ status: 'erro' });
+  }
+});
+
 app.get('/', (req, res) => {
   res.json({ status: 'ok', servico: 'Webflow API' });
 });

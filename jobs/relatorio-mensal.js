@@ -182,7 +182,7 @@ async function verificarRelatoriosMensais() {
 
   const lojistas = db.prepare(`
     SELECT id FROM usuarios
-    WHERE is_admin = 0 AND is_comercial = 0 AND codigo_nfc IS NOT NULL
+    WHERE is_admin = 0 AND is_comercial = 0 AND codigo_nfc IS NOT NULL AND plano <> 'pendente'
       AND COALESCE(relatorio_enviado_mes, '') <> ?
       AND criado_em < ?
   `).all(mes, limitesDoMes(mesAtual).inicio);

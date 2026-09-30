@@ -44,15 +44,18 @@ router.post('/registrar', (req, res) => {
     return res.status(400).json({ erro: 'A senha precisa ter pelo menos 6 caracteres.' });
   }
 
-  const planoEscolhido = PLANOS_VALIDOS.includes(plano) ? plano : 'basico';
+  // Quem se cadastra pelo site só recebe o plano depois que o pagamento é aprovado no Mercado Pago.
+  // Até lá a conta fica "pendente" (vê só a tela de Planos pra pagar).
+  const planoDesejado = PLANOS_VALIDOS.includes(plano) ? plano : 'basico';
   const senha_hash = bcrypt.hashSync(senha, 10);
   const isAdmin = ehEmailAdmin(email) ? 1 : 0;
+  const planoEscolhido = isAdmin ? 'premium' : 'pendente';
 
   try {
     const resultado = db.prepare(`
-      INSERT INTO usuarios (nome, email, senha_hash, negocio_nome, segmento, plano, is_admin, aceite_termos_em)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(nome, email.toLowerCase().trim(), senha_hash, negocio_nome || null, segmento || 'restaurante', planoEscolhido, isAdmin, new Date().toISOString());
+      INSERT INTO usuarios (nome, email, senha_hash, negocio_nome, segmento, plano, plano_desejado, is_admin, aceite_termos_em)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(nome, email.toLowerCase().trim(), senha_hash, negocio_nome || null, segmento || 'restaurante', planoEscolhido, planoDesejado, isAdmin, new Date().toISOString());
 
     // Gera o código único da placa NFC pro cliente recém-criado
     const codigoNfc = gerarCodigoNfc();

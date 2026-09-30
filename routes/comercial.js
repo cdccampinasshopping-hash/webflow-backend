@@ -4,6 +4,16 @@ const crypto = require('crypto');
 const { MercadoPagoConfig, Payment } = require('mercadopago');
 const db = require('../db');
 const { buscarPlaca, vincularPlaca, codigosDaLoja } = require('../placas');
+const { enviarReciboVenda } = require('../recibo');
+
+// Guarda só os dígitos do WhatsApp; aceita com ou sem 55 na frente
+function limparTelefone(t) {
+  const d = String(t || '').replace(/\D/g, '');
+  if (!d) return null;
+  if (d.length === 10 || d.length === 11) return `55${d}`;
+  if ((d.length === 12 || d.length === 13) && d.startsWith('55')) return d;
+  return undefined; // inválido
+}
 const { exigirLogin, exigirComercial } = require('../middleware/auth');
 
 const router = express.Router();
@@ -52,8 +62,12 @@ function baseUrl(req) {
 router.post('/cadastrar', async (req, res) => {
   const {
     nome, email, senha, negocio_nome, segmento, plano,
-    linkGoogle, formaPagamento, codigoPlaca
+    linkGoogle, formaPagamento, codigoPlaca, telefone
   } = req.body || {};
+  const telefoneLimpo = limparTelefone(telefone);
+  if (telefoneLimpo === undefined) {
+    return res.status(400).json({ erro: 'WhatsApp inválido. Use DDD + número, ex.: (19) 99999-9999.' });
+  }
 
   if (!nome || !email || !senha) {
     return res.status(400).json({ erro: 'Nome, e-mail e senha são obrigatórios.' });
@@ -87,6 +101,7 @@ router.post('/cadastrar', async (req, res) => {
     );
 
     const clienteId = resultado.lastInsertRowid;
+    if (telefoneLimpo) db.prepare('UPDATE usuarios SET telefone = ? WHERE id = ?').run(telefoneLimpo, clienteId);
     const placaVinculada = codigoPlaca ? vincularPlaca(codigoPlaca, clienteId) : null;
 
     // Pix fica pendente até o webhook confirmar; dinheiro/cartão já libera na hora
@@ -99,6 +114,7 @@ router.post('/cadastrar', async (req, res) => {
     `).run(clienteId, req.usuarioId, formaPagamento, statusVenda, valor, confirmadoEm);
 
     const vendaId = venda.lastInsertRowid;
+    if (statusVenda === 'confirmado') enviarReciboVenda(vendaId); // sem esperar: o e-mail não segura a tela
 
     // Se for Pix, gera o pagamento de verdade no Mercado Pago e devolve o QR code
     let pix = null;
@@ -170,7 +186,7 @@ router.get('/vendas', (req, res) => {
   const vendas = db.prepare(`
     SELECT v.id, v.usuario_id AS cliente_id, v.forma_pagamento, v.status, v.valor, v.criado_em, v.confirmado_em,
            u.nome AS cliente_nome, u.negocio_nome, u.email AS cliente_email,
-           u.codigo_nfc, u.google_place_id, u.link_google, u.nfc_scans
+           u.codigo_nfc, u.google_place_id, u.link_google, u.nfc_scans, u.telefone
     FROM vendas v
     JOIN usuarios u ON u.id = v.usuario_id
     WHERE v.vendedor_id = ?
@@ -226,6 +242,7 @@ router.patch('/vendas/:id/confirmar', (req, res) => {
 
   db.prepare(`UPDATE vendas SET status = 'confirmado', confirmado_em = ? WHERE id = ?`)
     .run(new Date().toISOString(), venda.id);
+  enviarReciboVenda(venda.id);
 
   res.json({ id: venda.id, status: 'confirmado' });
 });
@@ -287,6 +304,17 @@ router.patch('/clientes/:id/placa', (req, res) => {
   const r = vincularPlaca((req.body || {}).codigoPlaca, Number(req.params.id));
   if (r.erro) return res.status(400).json({ erro: r.erro });
   res.json({ ok: true, codigo: r.codigo, placas: codigosDaLoja(Number(req.params.id)) });
+});
+
+
+// Salva/corrige o WhatsApp de um cliente que o próprio vendedor cadastrou
+router.patch('/clientes/:id/telefone', (req, res) => {
+  const venda = db.prepare('SELECT id FROM vendas WHERE usuario_id = ? AND vendedor_id = ?').get(req.params.id, req.usuarioId);
+  if (!venda) return res.status(404).json({ erro: 'Cliente não encontrado entre as suas vendas.' });
+  const tel = limparTelefone((req.body || {}).telefone);
+  if (!tel) return res.status(400).json({ erro: 'WhatsApp inválido. Use DDD + número, ex.: (19) 99999-9999.' });
+  db.prepare('UPDATE usuarios SET telefone = ? WHERE id = ?').run(tel, req.params.id);
+  res.json({ ok: true, telefone: tel });
 });
 
 module.exports = router;

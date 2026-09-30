@@ -170,4 +170,26 @@ db.exec(`
   )
 `);
 
+
+// WhatsApp do cliente (opcional, informado pelo comercial) e plano escolhido no cadastro pelo site
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN telefone TEXT`); } catch (e) { /* já existe */ }
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN plano_desejado TEXT`); } catch (e) { /* já existe */ }
+// Recibo da venda enviado por e-mail (uma vez só)
+try { db.exec(`ALTER TABLE vendas ADD COLUMN recibo_enviado_em TEXT`); } catch (e) { /* já existe */ }
+
+// Pedidos de placas extras feitos pelo próprio lojista no painel
+db.exec(`
+  CREATE TABLE IF NOT EXISTS pedidos_placas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    usuario_id INTEGER NOT NULL,
+    quantidade INTEGER NOT NULL,
+    valor REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'aguardando_pagamento',
+    criado_em TEXT DEFAULT (datetime('now')),
+    pago_em TEXT,
+    entregue_em TEXT,
+    FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+  )
+`);
+
 module.exports = db;

@@ -2,6 +2,14 @@ const express = require('express');
 const { MercadoPagoConfig, Payment, PreApproval } = require('mercadopago');
 const db = require('../db');
 const { estenderPremium, registrarAssinatura } = require('../jobs/assinaturas');
+const { enviarReciboVenda, enviarReciboPlano } = require('../recibo');
+const { enviarEmail } = require('../email');
+
+async function avisarAdmin(assunto, html) {
+  if (!process.env.ADMIN_EMAIL) return;
+  try { await enviarEmail({ para: process.env.ADMIN_EMAIL, assunto, html }); }
+  catch (e) { console.error('Não foi possível avisar o admin', e.message); }
+}
 
 const router = express.Router();
 const client = new MercadoPagoConfig({ accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN });
@@ -32,12 +40,29 @@ async function tratarPagamento(id) {
     return;
   }
 
+  if (referencia.startsWith('placa|')) {
+    // Placas extras pedidas pelo lojista no painel
+    const pedidoId = referencia.split('|')[1];
+    const r = db.prepare(`UPDATE pedidos_placas SET status = 'pago', pago_em = ? WHERE id = ? AND status = 'aguardando_pagamento'`)
+      .run(new Date().toISOString(), pedidoId);
+    if (r.changes) {
+      const p = db.prepare(`SELECT p.quantidade, u.negocio_nome, u.nome, u.email, u.telefone FROM pedidos_placas p JOIN usuarios u ON u.id = p.usuario_id WHERE p.id = ?`).get(pedidoId);
+      console.log(`Pedido de placa ${pedidoId} pago`);
+      avisarAdmin(`Pedido de ${p.quantidade} placa(s) extra(s) — ${p.negocio_nome || p.nome}`, `
+        <p><b>${p.negocio_nome || p.nome}</b> pagou <b>${p.quantidade} placa(s) extra(s)</b>.</p>
+        <p>Contato: ${p.email}${p.telefone ? ` · WhatsApp ${p.telefone}` : ''}</p>
+        <p>Entregue e ative as placas pelo painel admin, na aba Placas.</p>`);
+    }
+    return;
+  }
+
   if (referencia.startsWith('venda|')) {
     // Pagamento de uma venda feita pelo time comercial (placa NFC via Pix)
     const vendaId = referencia.split('|')[1];
     db.prepare(`UPDATE vendas SET status = 'confirmado', confirmado_em = ? WHERE id = ?`)
       .run(new Date().toISOString(), vendaId);
     console.log(`Pagamento Pix aprovado — venda ${vendaId} confirmada`);
+    enviarReciboVenda(vendaId);
     return;
   }
 
@@ -50,6 +75,14 @@ async function tratarPagamento(id) {
   // Pagamento de ativação/upgrade feito pelo próprio cliente ("usuarioId|plano")
   const [usuarioId, plano] = referencia.split('|');
   if (!usuarioId || !plano) return;
+  // Ativação pelo site: recibo pro cliente e aviso pra você (uma vez por pagamento)
+  const jaTinha = db.prepare('SELECT plano, nome, negocio_nome, email FROM usuarios WHERE id = ?').get(usuarioId);
+  if (jaTinha && jaTinha.plano !== plano) {
+    enviarReciboPlano(parseInt(usuarioId, 10), plano, info.transaction_amount, dataPagamento);
+    avisarAdmin(`Nova contratação pelo site: ${jaTinha.negocio_nome || jaTinha.nome} (${plano})`, `
+      <p><b>${jaTinha.negocio_nome || jaTinha.nome}</b> (${jaTinha.email}) pagou o plano <b>${plano}</b> pelo site.</p>
+      ${plano === 'pro' ? '' : '<p>Esse plano inclui a placa de avaliação: combine a entrega e ative a placa pelo painel admin.</p>'}`);
+  }
   if (plano === 'premium') {
     // A ativação já cobre o primeiro mês; depois disso vale a mensalidade
     estenderPremium(parseInt(usuarioId, 10), dataPagamento);
