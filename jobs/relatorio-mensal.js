@@ -69,8 +69,11 @@ function montarRelatorio(usuarioId, mes) {
     WHERE usuario_id = ? AND criado_em >= ? AND criado_em < ? AND nota <= 2
   `).get(u.id, inicio, fim).n;
   const totalGeral = db.prepare('SELECT COUNT(*) AS n, ROUND(AVG(nota), 1) AS media FROM avaliacoes WHERE usuario_id = ?').get(u.id);
+  const scansTotal = db.prepare('SELECT COALESCE(nfc_scans, 0) AS n FROM usuarios WHERE id = ?').get(u.id).n;
+  const [ano, m] = mes.split('-').map(Number);
+  const diasNoMes = new Date(Date.UTC(ano, m, 0)).getUTCDate();
 
-  return { usuario: u, mes, atual, anterior, destaques, pontosAtencao, totalGeral };
+  return { usuario: u, mes, atual, anterior, destaques, pontosAtencao, totalGeral, scansTotal, diasNoMes };
 }
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -90,11 +93,15 @@ function estrelas(n) {
   return '★'.repeat(cheia) + '☆'.repeat(5 - cheia);
 }
 
+// Placa indo direto pro Google: o mural não recebe notas novas, então o relatório foca nas leituras
+const modoDireto = () => process.env.PLACA_DIRETO_GOOGLE === '1';
+
 // Uma dica prática conforme o resultado do mês
 function dicaDoMes(r) {
   const { atual } = r;
   if (atual.scans === 0) return 'Sua placa não foi usada este mês. Deixe-a bem à vista no caixa ou na mesa e peça pro cliente aproximar o celular na hora de pagar: é o momento em que ele está mais disposto a avaliar.';
   const conversao = atual.scans ? atual.avaliacoes / atual.scans : 0;
+  if (modoDireto() && atual.avaliacoes === 0) return 'Cada leitura levou um cliente direto à página de avaliação da sua loja no Google. Peça pra equipe lembrar: "é só escolher as estrelas e tocar em Publicar". E responda as avaliações no Google: quem vê a loja respondendo confia mais.';
   if (atual.avaliacoes === 0) return 'A placa foi lida, mas ninguém deixou nota. Um convite simples da equipe ("se puder, deixa sua avaliação aqui") costuma dobrar o número de avaliações.';
   if (r.pontosAtencao > 0) return `Você recebeu ${r.pontosAtencao === 1 ? '1 avaliação' : `${r.pontosAtencao} avaliações`} de 1 ou 2 estrelas. Vale ler no painel e, se possível, responder no Google: clientes que veem a loja respondendo confiam mais.`;
   if (conversao < 0.4) return 'Menos da metade de quem leu a placa deixou nota. Treine a equipe pra lembrar o cliente de concluir: é só tocar nas estrelas.';
@@ -103,6 +110,7 @@ function dicaDoMes(r) {
 
 function htmlDoRelatorio(r) {
   const { usuario: u, atual, anterior } = r;
+  const direto = modoDireto() && atual.avaliacoes === 0;
   const negocio = esc(u.negocio_nome || u.nome);
   const portfolio = u.codigo_nfc ? `${SITE_URL}/portfolio.html?c=${encodeURIComponent(u.codigo_nfc)}` : null;
   const card = (titulo, valor, detalhe) => `
@@ -130,15 +138,19 @@ function htmlDoRelatorio(r) {
       <h1 style="font-size:24px;color:#13213C;margin:8px 0 4px">Seu mês em ${esc(nomeDoMes(r.mes))}</h1>
       <p style="color:#4A5873;margin:0 0 18px;font-size:15px">Oi, ${esc(u.nome)}! Veja como foi o mês de <b>${negocio}</b> na placa de avaliações.</p>
       <table role="presentation" style="width:100%;border-collapse:collapse"><tr>
+        ${direto ? `
+        ${card('Clientes levados ao Google', atual.scans, variacao(atual.scans, anterior.scans))}
+        ${card('Média por dia', String(Math.round((atual.scans / r.diasNoMes) * 10) / 10).replace('.', ','), '<span style="color:#4A5873">leituras da placa</span>')}
+        ${card('Desde o início', r.scansTotal, '<span style="color:#4A5873">leituras no total</span>')}` : `
         ${card('Leituras da placa', atual.scans, variacao(atual.scans, anterior.scans))}
         ${card('Avaliações', atual.avaliacoes, variacao(atual.avaliacoes, anterior.avaliacoes))}
-        ${card('Nota média', atual.media ? String(atual.media).replace('.', ',') : '—', atual.media ? `<span style="color:#F2A900">${estrelas(atual.media)}</span>` : '<span style="color:#4A5873">sem notas</span>')}
+        ${card('Nota média', atual.media ? String(atual.media).replace('.', ',') : '—', atual.media ? `<span style="color:#F2A900">${estrelas(atual.media)}</span>` : '<span style="color:#4A5873">sem notas</span>')}`}
       </tr></table>
       ${destaques}
       <div style="background:#FFF7D6;border-radius:14px;padding:14px 16px;margin-top:22px;color:#13213C;font-size:15px">
         <b>Dica do mês:</b> ${esc(dicaDoMes(r))}
       </div>
-      <p style="color:#4A5873;font-size:14px;margin:22px 0 0">Desde o início, ${negocio} já recebeu <b>${r.totalGeral.n || 0}</b> avaliações pela placa${r.totalGeral.media ? `, com média <b>${String(r.totalGeral.media).replace('.', ',')}</b>` : ''}.</p>
+      ${direto ? '' : `<p style="color:#4A5873;font-size:14px;margin:22px 0 0">Desde o início, ${negocio} já recebeu <b>${r.totalGeral.n || 0}</b> avaliações pela placa${r.totalGeral.media ? `, com média <b>${String(r.totalGeral.media).replace('.', ',')}</b>` : ''}.</p>`}
       <div style="margin-top:22px">
         <a href="${SITE_URL}/webflow.html" style="display:inline-block;background:#1D5BF0;color:#fff;text-decoration:none;padding:12px 18px;border-radius:12px;font-weight:700;font-size:15px">Ver todas no painel</a>
         ${portfolio ? `<a href="${portfolio}" style="display:inline-block;color:#1D5BF0;text-decoration:none;padding:12px 8px;font-weight:700;font-size:15px">Ver meu portfólio público</a>` : ''}
