@@ -127,4 +127,17 @@ catch (e) { /* coluna já existe, tudo bem */ }
 try { db.exec(`ALTER TABLE usuarios ADD COLUMN assinatura_id TEXT`); }
 catch (e) { /* coluna já existe, tudo bem */ }
 
+// Correções pontuais de dados, aplicadas uma única vez (ficam registradas em "migracoes")
+db.exec(`CREATE TABLE IF NOT EXISTS migracoes (nome TEXT PRIMARY KEY, aplicada_em TEXT DEFAULT (datetime('now')))`);
+function migrarUmaVez(nome, fn) {
+  if (db.prepare('SELECT 1 FROM migracoes WHERE nome = ?').get(nome)) return;
+  db.transaction(() => { fn(); db.prepare('INSERT INTO migracoes (nome) VALUES (?)').run(nome); })();
+}
+
+// Casa do Celular (Av. John Boyd Dunlop, Campinas): link de avaliação do Google informado pelo dono
+migrarUmaVez('2026-09-30-google-casa-do-celular', () => {
+  db.prepare(`UPDATE usuarios SET google_place_id = ?, link_google = ? WHERE codigo_nfc = ?`)
+    .run('ChIJAQAAbxrIyJQRgTH76gTMV6I', 'https://search.google.com/local/writereview?placeid=ChIJAQAAbxrIyJQRgTH76gTMV6I', '4ccc0b2f');
+});
+
 module.exports = db;

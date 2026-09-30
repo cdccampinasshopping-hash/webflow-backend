@@ -151,7 +151,7 @@ só mostrar "Cardápio 3D" pra quem está no Premium.
 - Toda avaliação feita ali fica salva na tabela `avaliacoes` e aparece no painel do lojista, em **Avaliações**.
 - O lojista escolhe quais aparecem no portfólio público (`portfolio.html?c=CODIGO`). Por padrão, 4 e 5 estrelas entram.
 - **Opcional:** configure `GOOGLE_PLACES_API_KEY` (Google Cloud → Places API (New)) pra mostrar também a nota, o total e as avaliações em destaque do Google. Só funciona pra lojas com Place ID salvo.
-- Pra voltar ao comportamento antigo (placa direto pro Google), defina `PLACA_DIRETO_GOOGLE=1`.
+- **Padrão atual: a placa vai direto pro Google.** Pra voltar a mostrar a tela da loja antes (que alimenta o mural), defina `PLACA_DIRETO_GOOGLE=0`.
 
 Rotas: `GET /api/publico/loja/:codigo`, `POST /api/publico/loja/:codigo/avaliacoes`, `GET /api/publico/portfolio/:codigo`, `GET /api/avaliacoes` (login), `PATCH /api/avaliacoes/:id` (login).
 

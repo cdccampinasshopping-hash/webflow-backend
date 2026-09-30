@@ -12,7 +12,8 @@ function destinoGoogle(loja) {
 }
 
 // Placa indo direto pro Google (sem a tela rápida da loja)
-const modoDireto = () => process.env.PLACA_DIRETO_GOOGLE === '1';
+// Padrão: placa vai direto pro Google. PLACA_DIRETO_GOOGLE=0 volta a mostrar a tela da loja antes.
+const modoDireto = () => process.env.PLACA_DIRETO_GOOGLE !== '0';
 
 function resumo(usuarioId) {
   const r = db.prepare(`
