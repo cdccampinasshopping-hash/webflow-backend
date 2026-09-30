@@ -94,7 +94,8 @@ function estrelas(n) {
 }
 
 // Placa indo direto pro Google: o mural não recebe notas novas, então o relatório foca nas leituras
-const modoDireto = () => process.env.PLACA_DIRETO_GOOGLE === '1';
+// Padrão: placa vai direto pro Google. PLACA_DIRETO_GOOGLE=0 volta a mostrar a tela da loja antes.
+const modoDireto = () => process.env.PLACA_DIRETO_GOOGLE !== '0';
 
 // Uma dica prática conforme o resultado do mês
 function dicaDoMes(r) {
