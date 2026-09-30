@@ -4,6 +4,7 @@ const cors = require('cors');
 const QRCode = require('qrcode');
 
 const db = require('./db');
+const { lojaPorCodigo, buscarPlaca } = require('./placas');
 const authRoutes = require('./routes/auth');
 const dadosRoutes = require('./routes/dados');
 const suporteRoutes = require('./routes/suporte');
@@ -36,9 +37,13 @@ app.get('/', (req, res) => {
 // Rota pública da placa NFC — sem login, é chamada pelo celular do cliente final.
 // Conta o scan e manda direto pra tela de avaliação do Google do negócio.
 app.get('/r/:codigo', (req, res) => {
-  const cliente = db.prepare('SELECT id, google_place_id, link_google FROM usuarios WHERE codigo_nfc = ?').get(req.params.codigo);
+  const cliente = lojaPorCodigo(req.params.codigo, 'id, google_place_id, link_google');
 
   if (!cliente) {
+    // Placa impressa em lote que ainda não foi vinculada a nenhuma loja
+    if (buscarPlaca(req.params.codigo)) {
+      return res.redirect(`${SITE_URL}/placa-nao-ativada.html`);
+    }
     return res.redirect(`${SITE_URL}/link-invalido.html`);
   }
 
@@ -63,15 +68,19 @@ app.get('/r/:codigo', (req, res) => {
 // QR Code público da placa (PNG) — aponta pro link dinâmico /r/:codigo, então cada leitura conta.
 // Não conta scan aqui: só gera a imagem pra imprimir.
 app.get('/qr/:codigo.png', async (req, res) => {
-  const cliente = db.prepare('SELECT id FROM usuarios WHERE codigo_nfc = ?').get(req.params.codigo);
-  if (!cliente) return res.status(404).json({ erro: 'Código não encontrado.' });
+  const cliente = lojaPorCodigo(req.params.codigo, 'id');
+  const placa = cliente ? null : buscarPlaca(req.params.codigo);
+  if (!cliente && !placa) return res.status(404).json({ erro: 'Código não encontrado.' });
+  const codigo = placa ? placa.codigo : req.params.codigo;
 
   const base = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
+  // ?w=1200 pra impressão em alta resolução (limite 1600px); ?margem=0 tira a borda branca
+  const largura = Math.min(1600, Math.max(200, parseInt(req.query.w, 10) || 600));
   try {
-    const png = await QRCode.toBuffer(`${base}/r/${req.params.codigo}`, { width: 600, margin: 2 });
+    const png = await QRCode.toBuffer(`${base}/r/${codigo}`, { width: largura, margin: req.query.margem === '0' ? 0 : 2, errorCorrectionLevel: 'M' });
     res.set('Content-Type', 'image/png');
     res.set('Cache-Control', 'public, max-age=86400');
-    if (req.query.download) res.set('Content-Disposition', `attachment; filename="placa-${req.params.codigo}.png"`);
+    if (req.query.download) res.set('Content-Disposition', `attachment; filename="placa-${codigo}.png"`);
     res.send(png);
   } catch (e) {
     console.error('Erro ao gerar QR', e);
