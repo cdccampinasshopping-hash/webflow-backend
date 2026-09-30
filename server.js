@@ -41,8 +41,10 @@ app.get('/r/:codigo', (req, res) => {
 
   if (!cliente) {
     // Placa impressa em lote que ainda não foi vinculada a nenhuma loja
-    if (buscarPlaca(req.params.codigo)) {
-      return res.redirect(`${SITE_URL}/placa-nao-ativada.html`);
+    // (o código aparece nessa tela pro comercial ativar, já que não vai impresso na placa)
+    const livre = buscarPlaca(req.params.codigo);
+    if (livre) {
+      return res.redirect(`${SITE_URL}/placa-nao-ativada.html?c=${encodeURIComponent(livre.codigo)}`);
     }
     return res.redirect(`${SITE_URL}/link-invalido.html`);
   }
