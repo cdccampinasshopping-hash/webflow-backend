@@ -8,9 +8,9 @@ const client = new MercadoPagoConfig({ accessToken: process.env.MERCADOPAGO_ACCE
 
 const PLANOS_VALIDOS = ['basico', 'pro', 'premium'];
 const PRECOS = {
-  basico: { titulo: 'Webflow — Plano Básico', valor: 80 },
-  pro: { titulo: 'Webflow — Plano Pró', valor: 200 },
-  premium: { titulo: 'Webflow — Plano Premium (ativação)', valor: 300 },
+  basico: { titulo: 'Flow Solution — Plano Básico', valor: 80 },
+  pro: { titulo: 'Flow Solution — Plano Pró', valor: 200 },
+  premium: { titulo: 'Flow Solution — Plano Premium (ativação)', valor: 300 },
 };
 
 const SITE_URL = process.env.SITE_URL || 'https://webflowservices.com';
@@ -56,7 +56,7 @@ router.post('/assinatura', async (req, res) => {
     const preapproval = new PreApproval(client);
     const resultado = await preapproval.create({
       body: {
-        reason: 'Webflow Premium — mensalidade',
+        reason: 'Flow Solution Premium — mensalidade',
         external_reference: `${req.usuarioId}`,
         payer_email: usuario.email,
         back_url: `${SITE_URL}/webflow.html?assinatura=sucesso`,

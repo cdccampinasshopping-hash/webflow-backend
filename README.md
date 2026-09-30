@@ -154,3 +154,15 @@ só mostrar "Cardápio 3D" pra quem está no Premium.
 - Pra voltar ao comportamento antigo (placa direto pro Google), defina `PLACA_DIRETO_GOOGLE=1`.
 
 Rotas: `GET /api/publico/loja/:codigo`, `POST /api/publico/loja/:codigo/avaliacoes`, `GET /api/publico/portfolio/:codigo`, `GET /api/avaliacoes` (login), `PATCH /api/avaliacoes/:id` (login).
+
+## Mensalidade do Premium (bloqueio automático)
+
+- Cada pagamento aprovado do Premium (a ativação de R$ 300 ou uma mensalidade de R$ 150) libera o plano por **35 dias** (30 + 5 de tolerância). A data fica em `usuarios.premium_ate`.
+- Uma verificação diária (`jobs/assinaturas.js`) manda um lembrete por e-mail 2–3 dias antes do vencimento (se não houver assinatura ativa) e, quando vence, **volta o cliente para o plano Pró** e avisa o cliente e o `ADMIN_EMAIL`. Nenhum dado é apagado; pagou, volta na hora.
+- Cancelar a assinatura não derruba o Premium na hora: ele vale até o fim do período já pago.
+- Contas Premium antigas (sem `premium_ate`) não são afetadas até o primeiro pagamento pelo sistema novo.
+- **Configuração necessária no Mercado Pago:** em *Suas integrações → Webhooks*, aponte para `https://SEU-BACKEND/api/pagamentos/webhook` e marque os eventos **Pagamentos** e **Planos e assinaturas**.
+
+## LGPD
+
+- O cadastro exige aceitar os Termos de Uso e a Política de Privacidade (`privacidade.html` e `termos.html` no site). A data do aceite fica em `usuarios.aceite_termos_em`.
