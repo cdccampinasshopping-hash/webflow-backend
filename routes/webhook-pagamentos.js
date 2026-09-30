@@ -23,6 +23,15 @@ async function tratarPagamento(id) {
   const referencia = String(info.external_reference);
   const dataPagamento = info.date_approved || info.date_created;
 
+  if (referencia.startsWith('teste|')) {
+    // Pix de teste do admin: só marca que o aviso do Mercado Pago chegou
+    const testeId = referencia.split('|')[1];
+    db.prepare(`UPDATE pix_testes SET status = 'aprovado', confirmado_por_webhook = 1, pago_em = ? WHERE id = ?`)
+      .run(new Date().toISOString(), testeId);
+    console.log(`Pix de teste ${testeId} aprovado (webhook recebido)`);
+    return;
+  }
+
   if (referencia.startsWith('venda|')) {
     // Pagamento de uma venda feita pelo time comercial (placa NFC via Pix)
     const vendaId = referencia.split('|')[1];

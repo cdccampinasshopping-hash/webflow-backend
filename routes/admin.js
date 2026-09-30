@@ -1,5 +1,6 @@
 const express = require('express');
 const db = require('../db');
+const { MercadoPagoConfig, Payment } = require('mercadopago');
 const { gerarCodigoUnico, buscarPlaca, vincularPlaca, normalizarCodigo } = require('../placas');
 const { exigirLogin, exigirAdmin } = require('../middleware/auth');
 const { enviarRelatorio, mesAnterior, mesAtualBrasilia } = require('../jobs/relatorio-mensal');
@@ -268,6 +269,58 @@ router.patch('/placas/:codigo', (req, res) => {
 router.delete('/placas/lote/:lote', (req, res) => {
   const r = db.prepare('DELETE FROM placas WHERE lote = ? AND usuario_id IS NULL').run(req.params.lote);
   res.json({ ok: true, apagadas: r.changes });
+});
+
+
+/* ------------------------- PIX DE TESTE (R$ 1) ------------------------- */
+const mpClient = new MercadoPagoConfig({ accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN });
+const VALOR_PIX_TESTE = 1;
+
+// Gera um Pix real de R$ 1 pra testar o Mercado Pago e o aviso automático (webhook)
+router.post('/pix-teste', async (req, res) => {
+  if (!process.env.MERCADOPAGO_ACCESS_TOKEN) {
+    return res.status(400).json({ erro: 'MERCADOPAGO_ACCESS_TOKEN não está configurado no servidor.' });
+  }
+  const teste = db.prepare('INSERT INTO pix_testes (valor) VALUES (?)').run(VALOR_PIX_TESTE);
+  const testeId = teste.lastInsertRowid;
+  const base = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
+  try {
+    const pagamento = await new Payment(mpClient).create({
+      body: {
+        transaction_amount: VALOR_PIX_TESTE,
+        description: 'Flow Solution — teste de Pix (R$ 1)',
+        payment_method_id: 'pix',
+        payer: { email: 'pix-teste@flowsolution.com.br' },
+        external_reference: `teste|${testeId}`,
+        notification_url: `${base}/api/pagamentos/webhook`,
+      },
+    });
+    const dados = pagamento.point_of_interaction?.transaction_data;
+    db.prepare('UPDATE pix_testes SET mp_payment_id = ? WHERE id = ?').run(String(pagamento.id), testeId);
+    res.status(201).json({
+      id: testeId,
+      valor: VALOR_PIX_TESTE,
+      qrCodeBase64: dados?.qr_code_base64 || null,
+      copiaECola: dados?.qr_code || null,
+    });
+  } catch (e) {
+    console.error('Erro ao gerar Pix de teste', e);
+    db.prepare(`UPDATE pix_testes SET status = 'erro' WHERE id = ?`).run(testeId);
+    const detalhe = e?.message || (e?.cause && JSON.stringify(e.cause)) || '';
+    res.status(502).json({ erro: `O Mercado Pago recusou gerar o Pix. ${detalhe}`.trim() });
+  }
+});
+
+// Situação do Pix de teste: o que o Mercado Pago diz e se o webhook chegou
+router.get('/pix-teste/:id', async (req, res) => {
+  const t = db.prepare('SELECT * FROM pix_testes WHERE id = ?').get(req.params.id);
+  if (!t) return res.status(404).json({ erro: 'Teste não encontrado.' });
+  let statusMercadoPago = null;
+  if (t.mp_payment_id) {
+    try { statusMercadoPago = (await new Payment(mpClient).get({ id: t.mp_payment_id })).status; }
+    catch (e) { statusMercadoPago = 'indisponivel'; }
+  }
+  res.json({ id: t.id, statusMercadoPago, webhookRecebido: !!t.confirmado_por_webhook, pagoEm: t.pago_em });
 });
 
 module.exports = router;

@@ -156,4 +156,18 @@ db.exec(`
 db.exec(`CREATE INDEX IF NOT EXISTS idx_placas_lote ON placas(lote)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_placas_usuario ON placas(usuario_id)`);
 
+
+// Pix de teste (R$ 1) gerado pelo admin pra conferir o Mercado Pago + webhook, sem criar venda nem cliente
+db.exec(`
+  CREATE TABLE IF NOT EXISTS pix_testes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mp_payment_id TEXT,
+    valor REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pendente',
+    confirmado_por_webhook INTEGER NOT NULL DEFAULT 0,
+    criado_em TEXT DEFAULT (datetime('now')),
+    pago_em TEXT
+  )
+`);
+
 module.exports = db;
