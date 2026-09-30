@@ -114,4 +114,17 @@ db.exec(`
 `);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_avaliacoes_usuario ON avaliacoes(usuario_id, criado_em)`);
 
+// LGPD: quando a pessoa aceitou os Termos de Uso e a Política de Privacidade
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN aceite_termos_em TEXT`); }
+catch (e) { /* coluna já existe, tudo bem */ }
+
+// Premium: até quando a mensalidade está paga (data ISO). NULL = sem controle
+// (contas antigas continuam como estão até o primeiro pagamento pelo sistema novo).
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN premium_ate TEXT`); }
+catch (e) { /* coluna já existe, tudo bem */ }
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN assinatura_status TEXT`); }
+catch (e) { /* coluna já existe, tudo bem */ }
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN assinatura_id TEXT`); }
+catch (e) { /* coluna já existe, tudo bem */ }
+
 module.exports = db;

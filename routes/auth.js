@@ -32,10 +32,13 @@ function gerarCodigoNfc() {
 }
 
 router.post('/registrar', (req, res) => {
-  const { nome, email, senha, negocio_nome, segmento, plano } = req.body || {};
+  const { nome, email, senha, negocio_nome, segmento, plano, aceite } = req.body || {};
 
   if (!nome || !email || !senha) {
     return res.status(400).json({ erro: 'Nome, e-mail e senha são obrigatórios.' });
+  }
+  if (aceite !== true) {
+    return res.status(400).json({ erro: 'Para criar a conta, aceite os Termos de Uso e a Política de Privacidade.' });
   }
   if (senha.length < 6) {
     return res.status(400).json({ erro: 'A senha precisa ter pelo menos 6 caracteres.' });
@@ -47,9 +50,9 @@ router.post('/registrar', (req, res) => {
 
   try {
     const resultado = db.prepare(`
-      INSERT INTO usuarios (nome, email, senha_hash, negocio_nome, segmento, plano, is_admin)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(nome, email.toLowerCase().trim(), senha_hash, negocio_nome || null, segmento || 'restaurante', planoEscolhido, isAdmin);
+      INSERT INTO usuarios (nome, email, senha_hash, negocio_nome, segmento, plano, is_admin, aceite_termos_em)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(nome, email.toLowerCase().trim(), senha_hash, negocio_nome || null, segmento || 'restaurante', planoEscolhido, isAdmin, new Date().toISOString());
 
     // Gera o código único da placa NFC pro cliente recém-criado
     const codigoNfc = gerarCodigoNfc();
@@ -134,10 +137,10 @@ router.post('/esqueci-senha', async (req, res) => {
     try {
       await enviarEmail({
         para: usuario.email,
-        assunto: 'Redefinir sua senha — Webflow',
+        assunto: 'Redefinir sua senha — Flow Solution',
         html: `
           <p>Oi, ${usuario.nome}!</p>
-          <p>Recebemos um pedido pra redefinir a senha da sua conta no Webflow.</p>
+          <p>Recebemos um pedido pra redefinir a senha da sua conta na Flow Solution.</p>
           <p><a href="${link}">Clique aqui pra escolher uma nova senha</a></p>
           <p>Esse link vale por 1 hora. Se você não pediu isso, pode ignorar este e-mail.</p>
         `,
