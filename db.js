@@ -253,6 +253,8 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_pedidos_online_usuario ON pedidos_online(usuario_id, importado);
 `);
+// Cliente autorizou receber novidades/promoções da loja (LGPD)
+try { db.exec(`ALTER TABLE pedidos_online ADD COLUMN novidades INTEGER NOT NULL DEFAULT 0`); } catch (e) { /* já existe */ }
 
 module.exports = db;
 module.exports.PASTA_ARQUIVOS = path.join(path.dirname(dbPath), 'arquivos');

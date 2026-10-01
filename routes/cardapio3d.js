@@ -67,21 +67,35 @@ function lerPreco(v) {
 }
 
 /* ---------- configurações de pedido da loja ---------- */
-const CONFIG_PADRAO = { aceitaPedidos: false, mesa: true, retirada: false, entrega: false, taxaEntrega: 0, whatsapp: '' };
+const CONFIG_PADRAO = {
+  aceitaPedidos: false, mesa: true, retirada: false, entrega: false, taxaEntrega: 0, whatsapp: '',
+  // dados da loja (rota de entregas e robô de atendimento)
+  endereco: '', cidade: '',
+  roboAtivo: false, horario: '', pagamentosTxt: '', tempoEntrega: '', faq: [],
+};
 function lerConfig(texto) {
   let c = {};
   try { c = JSON.parse(texto || '{}') || {}; } catch (e) { c = {}; }
   return { ...CONFIG_PADRAO, ...c };
 }
-function limparConfig(b) {
-  const tel = String(b.whatsapp || '').replace(/\D/g, '').slice(0, 13);
-  const taxa = lerPreco(b.taxaEntrega);
-  return {
-    aceitaPedidos: !!b.aceitaPedidos,
-    mesa: !!b.mesa, retirada: !!b.retirada, entrega: !!b.entrega,
-    taxaEntrega: taxa === undefined || taxa === null ? 0 : taxa,
-    whatsapp: tel.length >= 10 ? (tel.length <= 11 ? '55' + tel : tel) : '',
-  };
+// Só mexe nos campos que vieram no pedido; o resto da configuração continua como estava
+function limparConfig(b, atual) {
+  const c = { ...atual };
+  const tem = (k) => Object.prototype.hasOwnProperty.call(b, k);
+  ['aceitaPedidos', 'mesa', 'retirada', 'entrega', 'roboAtivo'].forEach((k) => { if (tem(k)) c[k] = !!b[k]; });
+  if (tem('taxaEntrega')) { const t = lerPreco(b.taxaEntrega); c.taxaEntrega = t === undefined || t === null ? 0 : t; }
+  if (tem('whatsapp')) {
+    const tel = String(b.whatsapp || '').replace(/\D/g, '').slice(0, 13);
+    c.whatsapp = tel.length >= 10 ? (tel.length <= 11 ? '55' + tel : tel) : '';
+  }
+  const textos = { endereco: 160, cidade: 60, horario: 300, pagamentosTxt: 200, tempoEntrega: 80 };
+  Object.keys(textos).forEach((k) => { if (tem(k)) c[k] = String(b[k] || '').trim().slice(0, textos[k]); });
+  if (tem('faq')) {
+    c.faq = (Array.isArray(b.faq) ? b.faq : []).slice(0, 12)
+      .map((f) => ({ p: String((f && f.p) || '').trim().slice(0, 120), r: String((f && f.r) || '').trim().slice(0, 500) }))
+      .filter((f) => f.p && f.r);
+  }
+  return c;
 }
 const STATUS = ['novo', 'preparo', 'pronto', 'entregue', 'cancelado'];
 
@@ -130,7 +144,8 @@ function rotasGestao(donoDe) {
   });
 
   r.put('/config', (req, res) => {
-    const c = limparConfig(req.body || {});
+    const atual = lerConfig((db.prepare('SELECT cardapio_config FROM usuarios WHERE id = ?').get(donoDe(req)) || {}).cardapio_config);
+    const c = limparConfig(req.body || {}, atual);
     if (c.aceitaPedidos && !c.mesa && !c.retirada && !c.entrega) {
       return res.status(400).json({ erro: 'Escolha pelo menos um jeito de receber pedido: na mesa, retirada ou entrega.' });
     }
@@ -143,6 +158,26 @@ function rotasGestao(donoDe) {
     const pend = req.query.pendentes === '1';
     const lista = db.prepare(`SELECT * FROM pedidos_online WHERE usuario_id = ? ${pend ? 'AND importado = 0' : ''} ORDER BY id DESC LIMIT 100`).all(donoDe(req));
     res.json({ pedidos: lista.map(pedidoParaJson) });
+  });
+
+  // CRM: clientes que já pediram pelo cardápio, agrupados pelo telefone
+  r.get('/clientes', (req, res) => {
+    const linhas = db.prepare(`SELECT nome, telefone, endereco, total, criado_em, novidades, modo, status
+      FROM pedidos_online WHERE usuario_id = ? AND telefone IS NOT NULL AND status != 'cancelado' ORDER BY id`).all(donoDe(req));
+    const mapa = new Map();
+    linhas.forEach((p) => {
+      const chave = String(p.telefone).replace(/\D/g, '').replace(/^55(?=\d{10,11}$)/, '');
+      if (chave.length < 10) return;
+      const c = mapa.get(chave) || { telefone: chave, nome: null, endereco: null, pedidos: 0, gasto: 0, primeiro: p.criado_em, ultimo: null, novidades: false };
+      c.nome = p.nome || c.nome;
+      if (p.endereco) c.endereco = p.endereco;
+      c.pedidos += 1;
+      c.gasto = Math.round((c.gasto + (p.total || 0)) * 100) / 100;
+      c.ultimo = p.criado_em;
+      c.novidades = !!p.novidades; // vale a escolha mais recente do cliente
+      mapa.set(chave, c);
+    });
+    res.json({ clientes: [...mapa.values()].sort((a, b) => b.gasto - a.gasto) });
   });
 
   r.post('/pedidos/confirmar', (req, res) => {
@@ -259,6 +294,10 @@ publico.get('/:codigo', (req, res) => {
       mesa: c.mesa, retirada: c.retirada, entrega: c.entrega, taxaEntrega: c.taxaEntrega,
       whatsapp: c.whatsapp || null,
     },
+    robo: c.roboAtivo ? {
+      horario: c.horario || null, endereco: [c.endereco, c.cidade].filter(Boolean).join(' · ') || null,
+      pagamentos: c.pagamentosTxt || null, tempoEntrega: c.tempoEntrega || null, faq: c.faq || [],
+    } : null,
     pratos: pratos.map((p) => {
       const j = pratoParaJson(req, p);
       delete j.visualizacoes; delete j.ativo; delete j.ordem;
@@ -299,6 +338,7 @@ publico.post('/:codigo/pedido', (req, res) => {
   if (!['mesa', 'retirada', 'entrega'].includes(modo) || !c[modo]) return res.status(400).json({ erro: 'Escolha como quer receber o pedido.' });
   const nome = limparTexto(b.nome, 60);
   const mesa = limparTexto(b.mesa, 12);
+  const novidades = b.novidades ? 1 : 0;
   const telefone = limparTexto(String(b.telefone || '').replace(/[^\d()+ -]/g, ''), 20);
   const endereco = limparTexto(b.endereco, 200);
   const obs = limparTexto(b.obs, 200);
@@ -324,9 +364,9 @@ publico.post('/:codigo/pedido', (req, res) => {
   const taxa = modo === 'entrega' ? (c.taxaEntrega || 0) : 0;
   const total = Math.round((subtotal + taxa) * 100) / 100;
   const token = crypto.randomBytes(12).toString('hex');
-  const info = db.prepare(`INSERT INTO pedidos_online (usuario_id, token, itens, subtotal, taxa, total, modo, mesa, nome, telefone, endereco, pagamento, troco, obs)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(loja.id, token, JSON.stringify(itens), subtotal, taxa, total, modo, mesa, nome, telefone, endereco, pagamento, troco, obs);
+  const info = db.prepare(`INSERT INTO pedidos_online (usuario_id, token, itens, subtotal, taxa, total, modo, mesa, nome, telefone, endereco, pagamento, troco, obs, novidades)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(loja.id, token, JSON.stringify(itens), subtotal, taxa, total, modo, mesa, nome, telefone, endereco, pagamento, troco, obs, telefone ? novidades : 0);
   res.status(201).json({ id: info.lastInsertRowid, token, itens, subtotal, taxa, total });
 });
 
