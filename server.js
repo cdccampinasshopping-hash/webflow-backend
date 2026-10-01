@@ -109,10 +109,13 @@ app.get('/qr-cardapio/:codigo.png', async (req, res) => {
   if (!loja) return res.status(404).json({ erro: 'Código não encontrado.' });
   const largura = Math.min(1600, Math.max(200, parseInt(req.query.w, 10) || 800));
   try {
-    const png = await QRCode.toBuffer(`${SITE_URL}/cardapio.html?c=${encodeURIComponent(req.params.codigo)}`, { width: largura, margin: 2, errorCorrectionLevel: 'M' });
+    // ?mesa=5 → o cardápio já abre sabendo a mesa do cliente
+    const mesa = String(req.query.mesa || '').replace(/[^\w-]/g, '').slice(0, 12);
+    const destino = `${SITE_URL}/cardapio.html?c=${encodeURIComponent(req.params.codigo)}${mesa ? `&mesa=${encodeURIComponent(mesa)}` : ''}`;
+    const png = await QRCode.toBuffer(destino, { width: largura, margin: 2, errorCorrectionLevel: 'M' });
     res.set('Content-Type', 'image/png');
     res.set('Cache-Control', 'public, max-age=86400');
-    if (req.query.download) res.set('Content-Disposition', `attachment; filename="cardapio-3d-${req.params.codigo}.png"`);
+    if (req.query.download) res.set('Content-Disposition', `attachment; filename="cardapio-${mesa ? 'mesa-' + mesa : req.params.codigo}.png"`);
     res.send(png);
   } catch (e) {
     console.error('Erro ao gerar QR do cardápio', e);

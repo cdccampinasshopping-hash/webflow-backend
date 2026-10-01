@@ -228,5 +228,31 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_pratos_3d_usuario ON pratos_3d(usuario_id);
 `);
 
+// Cardápio digital: configurações de pedido da loja e pedidos feitos pelo cliente no celular
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN cardapio_config TEXT`); } catch (e) { /* já existe */ }
+db.exec(`
+  CREATE TABLE IF NOT EXISTS pedidos_online (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    usuario_id INTEGER NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    itens TEXT NOT NULL,
+    subtotal REAL NOT NULL,
+    taxa REAL NOT NULL DEFAULT 0,
+    total REAL NOT NULL,
+    modo TEXT NOT NULL,
+    mesa TEXT,
+    nome TEXT,
+    telefone TEXT,
+    endereco TEXT,
+    pagamento TEXT,
+    troco TEXT,
+    obs TEXT,
+    status TEXT NOT NULL DEFAULT 'novo',
+    importado INTEGER NOT NULL DEFAULT 0,
+    criado_em TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_pedidos_online_usuario ON pedidos_online(usuario_id, importado);
+`);
+
 module.exports = db;
 module.exports.PASTA_ARQUIVOS = path.join(path.dirname(dbPath), 'arquivos');
