@@ -255,6 +255,8 @@ db.exec(`
 `);
 // Cliente autorizou receber novidades/promoções da loja (LGPD)
 try { db.exec(`ALTER TABLE pedidos_online ADD COLUMN novidades INTEGER NOT NULL DEFAULT 0`); } catch (e) { /* já existe */ }
+// Pedido lançado pelo app do garçom
+try { db.exec(`ALTER TABLE pedidos_online ADD COLUMN garcom TEXT`); } catch (e) { /* já existe */ }
 
 module.exports = db;
 module.exports.PASTA_ARQUIVOS = path.join(path.dirname(dbPath), 'arquivos');

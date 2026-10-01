@@ -72,14 +72,41 @@ const CONFIG_PADRAO = {
   // dados da loja (rota de entregas e robô de atendimento)
   endereco: '', cidade: '',
   roboAtivo: false, horario: '', pagamentosTxt: '', tempoEntrega: '', faq: [],
+  garcons: [], // [{ id, nome, pinHash }] — app do garçom
 };
+
+/* ---------- app do garçom: PIN e sessão ---------- */
+function hashPin(donoId, pin) {
+  return crypto.createHash('sha256').update(`${process.env.JWT_SECRET}:${donoId}:${pin}`).digest('hex');
+}
+function tokenGarcom(donoId, g) {
+  const corpo = Buffer.from(JSON.stringify({ u: donoId, g: g.id, n: g.nome, exp: Date.now() + 14 * 3600000 })).toString('base64url');
+  const sig = crypto.createHmac('sha256', process.env.JWT_SECRET).update(corpo).digest('base64url');
+  return `${corpo}.${sig}`;
+}
+// O app do garçom manda "Authorization: Garcom <token>"
+function tokenDoPedido(req) {
+  const h = String(req.get('authorization') || '');
+  return h.startsWith('Garcom ') ? h.slice(7) : '';
+}
+function lerTokenGarcom(token, donoId) {
+  const [corpo, sig] = String(token || '').split('.');
+  if (!corpo || !sig) return null;
+  const esperado = crypto.createHmac('sha256', process.env.JWT_SECRET).update(corpo).digest('base64url');
+  if (sig.length !== esperado.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(esperado))) return null;
+  try {
+    const d = JSON.parse(Buffer.from(corpo, 'base64url').toString());
+    if (d.u !== donoId || d.exp < Date.now()) return null;
+    return d;
+  } catch (e) { return null; }
+}
 function lerConfig(texto) {
   let c = {};
   try { c = JSON.parse(texto || '{}') || {}; } catch (e) { c = {}; }
   return { ...CONFIG_PADRAO, ...c };
 }
 // Só mexe nos campos que vieram no pedido; o resto da configuração continua como estava
-function limparConfig(b, atual) {
+function limparConfig(b, atual, donoId) {
   const c = { ...atual };
   const tem = (k) => Object.prototype.hasOwnProperty.call(b, k);
   ['aceitaPedidos', 'mesa', 'retirada', 'entrega', 'roboAtivo'].forEach((k) => { if (tem(k)) c[k] = !!b[k]; });
@@ -90,6 +117,17 @@ function limparConfig(b, atual) {
   }
   const textos = { endereco: 160, cidade: 60, horario: 300, pagamentosTxt: 200, tempoEntrega: 80 };
   Object.keys(textos).forEach((k) => { if (tem(k)) c[k] = String(b[k] || '').trim().slice(0, textos[k]); });
+  if (tem('garcons')) {
+    const antigos = new Map((atual.garcons || []).map((g) => [String(g.id), g]));
+    c.garcons = (Array.isArray(b.garcons) ? b.garcons : []).slice(0, 50).map((g) => {
+      const id = String((g && g.id) || '').slice(0, 20);
+      const nome = String((g && g.nome) || '').trim().slice(0, 40);
+      const pin = String((g && g.pin) || '').replace(/\D/g, '');
+      const velho = antigos.get(id);
+      const pinHash = pin.length >= 4 && pin.length <= 6 ? hashPin(donoId, pin) : (velho && velho.pinHash) || null;
+      return { id, nome, pinHash };
+    }).filter((g) => g.id && g.nome && g.pinHash);
+  }
   if (tem('faq')) {
     c.faq = (Array.isArray(b.faq) ? b.faq : []).slice(0, 12)
       .map((f) => ({ p: String((f && f.p) || '').trim().slice(0, 120), r: String((f && f.r) || '').trim().slice(0, 500) }))
@@ -97,13 +135,17 @@ function limparConfig(b, atual) {
   }
   return c;
 }
+// Nunca manda o hash do PIN pro navegador
+function configSegura(c) {
+  return { ...c, garcons: (c.garcons || []).map((g) => ({ id: g.id, nome: g.nome, temPin: !!g.pinHash })) };
+}
 const STATUS = ['novo', 'preparo', 'pronto', 'entregue', 'cancelado'];
 
 function pedidoParaJson(p) {
   return {
     id: p.id, itens: JSON.parse(p.itens), subtotal: p.subtotal, taxa: p.taxa, total: p.total,
     modo: p.modo, mesa: p.mesa, nome: p.nome, telefone: p.telefone, endereco: p.endereco,
-    pagamento: p.pagamento, troco: p.troco, obs: p.obs, status: p.status, criado_em: p.criado_em,
+    pagamento: p.pagamento, troco: p.troco, obs: p.obs, status: p.status, criado_em: p.criado_em, garcom: p.garcom || null,
   };
 }
 
@@ -138,19 +180,21 @@ function rotasGestao(donoDe) {
     res.json({
       loja: { nome: dono.negocio_nome || dono.nome, codigo: dono.codigo_nfc, plano: dono.plano },
       qr: dono.codigo_nfc ? `${baseUrl(req)}/qr-cardapio/${dono.codigo_nfc}.png` : null,
-      config: lerConfig(dono.cardapio_config),
+      config: configSegura(lerConfig(dono.cardapio_config)),
       pratos: pratos.map((p) => pratoParaJson(req, p)),
     });
   });
 
   r.put('/config', (req, res) => {
     const atual = lerConfig((db.prepare('SELECT cardapio_config FROM usuarios WHERE id = ?').get(donoDe(req)) || {}).cardapio_config);
-    const c = limparConfig(req.body || {}, atual);
+    const c = limparConfig(req.body || {}, atual, donoDe(req));
+    const repetido = (c.garcons || []).find((g, i, l) => l.some((h, j) => j !== i && h.pinHash === g.pinHash));
+    if (repetido) return res.status(400).json({ erro: 'Dois garçons estão com o mesmo PIN. Cada um precisa de um PIN diferente.' });
     if (c.aceitaPedidos && !c.mesa && !c.retirada && !c.entrega) {
       return res.status(400).json({ erro: 'Escolha pelo menos um jeito de receber pedido: na mesa, retirada ou entrega.' });
     }
     db.prepare('UPDATE usuarios SET cardapio_config = ? WHERE id = ?').run(JSON.stringify(c), donoDe(req));
-    res.json({ config: c });
+    res.json({ config: configSegura(c) });
   });
 
   // Pedidos feitos pelo cardápio digital. ?pendentes=1 traz só os que o painel ainda não puxou.
@@ -330,12 +374,14 @@ publico.post('/:codigo/pedido', (req, res) => {
   const loja = lojaPorCodigo(req.params.codigo, 'id, plano, cardapio_config');
   if (!loja || loja.plano !== 'premium') return res.status(404).json({ erro: 'Cardápio não encontrado.' });
   const c = lerConfig(loja.cardapio_config);
-  if (!c.aceitaPedidos) return res.status(400).json({ erro: 'Essa loja não está recebendo pedidos pelo cardápio agora.' });
-  if (!podePedir(req.ip || 'x')) return res.status(429).json({ erro: 'Muitos pedidos seguidos. Espere alguns minutos ou chame um atendente.' });
+  const garcom = tokenDoPedido(req) ? lerTokenGarcom(tokenDoPedido(req), loja.id) : null;
+  if (tokenDoPedido(req) && !garcom) return res.status(401).json({ erro: 'Sua sessão de garçom expirou. Entre de novo com o PIN.' });
+  if (!garcom && !c.aceitaPedidos) return res.status(400).json({ erro: 'Essa loja não está recebendo pedidos pelo cardápio agora.' });
+  if (!garcom && !podePedir(req.ip || 'x')) return res.status(429).json({ erro: 'Muitos pedidos seguidos. Espere alguns minutos ou chame um atendente.' });
 
   const b = req.body || {};
-  const modo = String(b.modo || '');
-  if (!['mesa', 'retirada', 'entrega'].includes(modo) || !c[modo]) return res.status(400).json({ erro: 'Escolha como quer receber o pedido.' });
+  const modo = garcom ? 'mesa' : String(b.modo || '');
+  if (!['mesa', 'retirada', 'entrega'].includes(modo) || (!garcom && !c[modo])) return res.status(400).json({ erro: 'Escolha como quer receber o pedido.' });
   const nome = limparTexto(b.nome, 60);
   const mesa = limparTexto(b.mesa, 12);
   const novidades = b.novidades ? 1 : 0;
@@ -364,10 +410,36 @@ publico.post('/:codigo/pedido', (req, res) => {
   const taxa = modo === 'entrega' ? (c.taxaEntrega || 0) : 0;
   const total = Math.round((subtotal + taxa) * 100) / 100;
   const token = crypto.randomBytes(12).toString('hex');
-  const info = db.prepare(`INSERT INTO pedidos_online (usuario_id, token, itens, subtotal, taxa, total, modo, mesa, nome, telefone, endereco, pagamento, troco, obs, novidades)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(loja.id, token, JSON.stringify(itens), subtotal, taxa, total, modo, mesa, nome, telefone, endereco, pagamento, troco, obs, telefone ? novidades : 0);
+  const info = db.prepare(`INSERT INTO pedidos_online (usuario_id, token, itens, subtotal, taxa, total, modo, mesa, nome, telefone, endereco, pagamento, troco, obs, novidades, garcom)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(loja.id, token, JSON.stringify(itens), subtotal, taxa, total, modo, mesa, nome, telefone, endereco, pagamento, troco, obs, telefone ? novidades : 0, garcom ? garcom.n : null);
   res.status(201).json({ id: info.lastInsertRowid, token, itens, subtotal, taxa, total });
+});
+
+// App do garçom: entra com o PIN
+const tentativasPin = new Map();
+publico.post('/:codigo/garcom/entrar', (req, res) => {
+  const loja = lojaPorCodigo(req.params.codigo, 'id, nome, negocio_nome, plano, cardapio_config');
+  if (!loja || loja.plano !== 'premium') return res.status(404).json({ erro: 'Loja não encontrada.' });
+  const ip = req.ip || 'x', agora = Date.now();
+  const lista = (tentativasPin.get(ip) || []).filter((t) => agora - t < 10 * 60000);
+  if (lista.length >= 8) return res.status(429).json({ erro: 'Muitas tentativas. Espere 10 minutos.' });
+  const pin = String((req.body || {}).pin || '').replace(/\D/g, '');
+  const h = hashPin(loja.id, pin);
+  const g = (lerConfig(loja.cardapio_config).garcons || []).find((x) => x.pinHash === h);
+  if (!g) { lista.push(agora); tentativasPin.set(ip, lista); return res.status(401).json({ erro: 'PIN errado.' }); }
+  res.json({ token: tokenGarcom(loja.id, g), nome: g.nome, loja: loja.negocio_nome || loja.nome });
+});
+
+// Pedidos do garçom no dia (pra ele acompanhar o que mandou)
+publico.get('/:codigo/garcom/pedidos', (req, res) => {
+  const loja = lojaPorCodigo(req.params.codigo, 'id');
+  const g = loja && lerTokenGarcom(tokenDoPedido(req), loja.id);
+  if (!g) return res.status(401).json({ erro: 'Entre de novo com o PIN.' });
+  const lista = db.prepare(`SELECT id, mesa, itens, total, status, criado_em FROM pedidos_online
+    WHERE usuario_id = ? AND garcom = ? AND criado_em >= datetime('now', '-14 hours') ORDER BY id DESC LIMIT 40`).all(loja.id, g.n);
+  res.set('Cache-Control', 'no-store');
+  res.json({ pedidos: lista.map((p) => ({ ...p, itens: JSON.parse(p.itens) })) });
 });
 
 // O cliente acompanha o pedido pelo token que recebeu ao enviar
