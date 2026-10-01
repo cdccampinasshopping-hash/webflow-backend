@@ -2,6 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const QRCode = require('qrcode');
+const fs = require('fs');
+const path = require('path');
 
 const db = require('./db');
 const { lojaPorCodigo, buscarPlaca } = require('./placas');
@@ -13,6 +15,7 @@ const comercialRoutes = require('./routes/comercial');
 const pagamentosRoutes = require('./routes/pagamentos');
 const webhookPagamentosRoutes = require('./routes/webhook-pagamentos');
 const avaliacoesRoutes = require('./routes/avaliacoes');
+const cardapio3d = require('./routes/cardapio3d');
 const { exigirLogin, exigirAdmin } = require('./middleware/auth');
 const { iniciarAgendamentoBackup } = require('./jobs/backup');
 const { iniciarVerificacaoAssinaturas } = require('./jobs/assinaturas');
@@ -100,10 +103,47 @@ app.get('/qr/:codigo.png', async (req, res) => {
   }
 });
 
+// QR Code do cardápio 3D: aponta pra página pública do cardápio da loja (pra colocar nas mesas)
+app.get('/qr-cardapio/:codigo.png', async (req, res) => {
+  const loja = lojaPorCodigo(req.params.codigo, 'id');
+  if (!loja) return res.status(404).json({ erro: 'Código não encontrado.' });
+  const largura = Math.min(1600, Math.max(200, parseInt(req.query.w, 10) || 800));
+  try {
+    const png = await QRCode.toBuffer(`${SITE_URL}/cardapio.html?c=${encodeURIComponent(req.params.codigo)}`, { width: largura, margin: 2, errorCorrectionLevel: 'M' });
+    res.set('Content-Type', 'image/png');
+    res.set('Cache-Control', 'public, max-age=86400');
+    if (req.query.download) res.set('Content-Disposition', `attachment; filename="cardapio-3d-${req.params.codigo}.png"`);
+    res.send(png);
+  } catch (e) {
+    console.error('Erro ao gerar QR do cardápio', e);
+    res.status(500).json({ erro: 'Não foi possível gerar o QR Code.' });
+  }
+});
+
+// Modelos 3D e fotos do cardápio (públicos, nomes aleatórios)
+app.get('/arquivos/:nome', (req, res) => {
+  const nome = req.params.nome;
+  if (!/^[a-z0-9-]+\.(glb|jpg|png|webp)$/.test(nome)) return res.status(404).json({ erro: 'Arquivo não encontrado.' });
+  const arquivo = path.join(cardapio3d.PASTA, nome);
+  fs.stat(arquivo, (err, st) => {
+    if (err || !st.isFile()) return res.status(404).json({ erro: 'Arquivo não encontrado.' });
+    const tipos = { glb: 'model/gltf-binary', jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp' };
+    res.set('Content-Type', tipos[nome.split('.').pop()]);
+    res.set('Content-Length', String(st.size));
+    res.set('Cache-Control', 'public, max-age=604800, immutable');
+    fs.createReadStream(arquivo).pipe(res);
+  });
+});
+
+
 app.use('/api/auth', authRoutes);
 app.use('/api/dados', exigirLogin, dadosRoutes);
 app.use('/api/suporte', exigirLogin, suporteRoutes);
+// Admin monta o cardápio 3D em nome do cliente: /api/admin/cardapio3d?cliente=ID
+app.use('/api/admin/cardapio3d', exigirLogin, exigirAdmin, cardapio3d.rotasGestao((req) => Number(req.query.cliente)));
 app.use('/api/admin', exigirLogin, exigirAdmin, adminRoutes);
+app.use('/api/cardapio3d', exigirLogin, cardapio3d.exigirPremium, cardapio3d.rotasGestao((req) => req.usuarioId));
+app.use('/api/publico/cardapio3d', cardapio3d.publico);
 app.use('/api/comercial', comercialRoutes);
 app.use('/api/pagamentos/webhook', webhookPagamentosRoutes);
 app.use('/api/pagamentos', exigirLogin, pagamentosRoutes);

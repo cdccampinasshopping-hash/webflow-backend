@@ -209,4 +209,24 @@ db.exec(`
 // Meta mensal de vendas confirmadas de cada vendedor (0 = sem meta)
 try { db.exec(`ALTER TABLE usuarios ADD COLUMN meta_mensal INTEGER NOT NULL DEFAULT 0`); } catch (e) { /* já existe */ }
 
+// Cardápio 3D (Premium): pratos com modelo .glb e foto, guardados na pasta "arquivos" ao lado do banco
+db.exec(`
+  CREATE TABLE IF NOT EXISTS pratos_3d (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    usuario_id INTEGER NOT NULL,
+    nome TEXT NOT NULL,
+    descricao TEXT,
+    categoria TEXT,
+    preco REAL,
+    modelo TEXT,
+    foto TEXT,
+    ordem INTEGER NOT NULL DEFAULT 0,
+    ativo INTEGER NOT NULL DEFAULT 1,
+    visualizacoes INTEGER NOT NULL DEFAULT 0,
+    criado_em TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_pratos_3d_usuario ON pratos_3d(usuario_id);
+`);
+
 module.exports = db;
+module.exports.PASTA_ARQUIVOS = path.join(path.dirname(dbPath), 'arquivos');
