@@ -370,4 +370,55 @@ router.patch('/pedidos-placas/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+
+/* ------------------------- DEPOIMENTOS DO SITE ------------------------- */
+router.get('/depoimentos', (req, res) => {
+  res.json({ depoimentos: db.prepare('SELECT * FROM depoimentos ORDER BY criado_em DESC').all() });
+});
+
+router.post('/depoimentos', (req, res) => {
+  const b = req.body || {};
+  const nome = String(b.nome || '').trim().slice(0, 80);
+  const texto = String(b.texto || '').trim().slice(0, 600);
+  if (!nome || !texto) return res.status(400).json({ erro: 'Preencha o nome e o depoimento.' });
+  const nota = Math.min(5, Math.max(1, parseInt(b.nota, 10) || 5));
+  const r = db.prepare('INSERT INTO depoimentos (nome, negocio, cidade, texto, nota) VALUES (?, ?, ?, ?, ?)')
+    .run(nome, String(b.negocio || '').trim().slice(0, 80) || null, String(b.cidade || '').trim().slice(0, 60) || null, texto, nota);
+  res.status(201).json({ id: r.lastInsertRowid });
+});
+
+router.patch('/depoimentos/:id', (req, res) => {
+  const r = db.prepare('UPDATE depoimentos SET visivel = ? WHERE id = ?').run((req.body || {}).visivel ? 1 : 0, req.params.id);
+  if (!r.changes) return res.status(404).json({ erro: 'Depoimento não encontrado.' });
+  res.json({ ok: true });
+});
+
+router.delete('/depoimentos/:id', (req, res) => {
+  const r = db.prepare('DELETE FROM depoimentos WHERE id = ?').run(req.params.id);
+  if (!r.changes) return res.status(404).json({ erro: 'Depoimento não encontrado.' });
+  res.json({ ok: true });
+});
+
+/* ------------------------- METAS DO COMERCIAL ------------------------- */
+function mesBrasilia() { return new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 7); }
+
+router.get('/metas', (req, res) => {
+  const mes = /^\d{4}-\d{2}$/.test(req.query.mes || '') ? req.query.mes : mesBrasilia();
+  const vendedores = db.prepare(`
+    SELECT u.id, u.nome, u.email, u.meta_mensal,
+      (SELECT COUNT(*) FROM vendas v WHERE v.vendedor_id = u.id AND v.status = 'confirmado'
+         AND strftime('%Y-%m', v.confirmado_em, '-3 hours') = ?) AS vendas_mes
+    FROM usuarios u WHERE u.is_comercial = 1 ORDER BY u.nome
+  `).all(mes);
+  res.json({ mes, vendedores });
+});
+
+router.patch('/vendedores/:id/meta', (req, res) => {
+  const meta = parseInt((req.body || {}).meta, 10);
+  if (!(meta >= 0 && meta <= 1000)) return res.status(400).json({ erro: 'A meta precisa ser um número de 0 a 1000.' });
+  const r = db.prepare('UPDATE usuarios SET meta_mensal = ? WHERE id = ? AND is_comercial = 1').run(meta, req.params.id);
+  if (!r.changes) return res.status(404).json({ erro: 'Vendedor não encontrado.' });
+  res.json({ ok: true, meta });
+});
+
 module.exports = router;

@@ -88,6 +88,12 @@ publico.get('/portfolio/:codigo', async (req, res) => {
   });
 });
 
+// Depoimentos de clientes da Flow Solution (cadastrados pelo admin) pro site
+publico.get('/depoimentos', (req, res) => {
+  const depoimentos = db.prepare(`SELECT nome, negocio, cidade, texto, nota FROM depoimentos WHERE visivel = 1 ORDER BY criado_em DESC LIMIT 12`).all();
+  res.json({ depoimentos });
+});
+
 /* ------------------------- ROTAS DO LOJISTA ------------------------- */
 const lojista = express.Router();
 lojista.use(exigirLogin);
@@ -119,6 +125,37 @@ lojista.patch('/:id', (req, res) => {
   const r = db.prepare('UPDATE avaliacoes SET visivel = ? WHERE id = ? AND usuario_id = ?').run(visivel, req.params.id, req.usuarioId);
   if (!r.changes) return res.status(404).json({ erro: 'Avaliação não encontrada.' });
   res.json({ ok: true, visivel });
+});
+
+
+// Resumo dos últimos 7 dias pro topo do painel do lojista
+lojista.get('/semana', async (req, res) => {
+  const u = db.prepare('SELECT id, google_place_id FROM usuarios WHERE id = ?').get(req.usuarioId);
+  if (!u) return res.status(404).json({ erro: 'Conta não encontrada.' });
+  const conta = (tabela, de, ate) => db.prepare(
+    `SELECT COUNT(*) AS n FROM ${tabela} WHERE usuario_id = ? AND criado_em >= datetime('now', ?) AND criado_em < datetime('now', ?)`
+  ).get(u.id, de, ate).n;
+  const porDia = db.prepare(`
+    SELECT strftime('%Y-%m-%d', criado_em, '-3 hours') AS dia, COUNT(*) AS n FROM scans_log
+    WHERE usuario_id = ? AND criado_em >= datetime('now', '-7 days') GROUP BY dia
+  `).all(u.id);
+  const mapa = Object.fromEntries(porDia.map((d) => [d.dia, d.n]));
+  const dias = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(Date.now() - 3 * 3600000 - i * 86400000).toISOString().slice(0, 10);
+    dias.push({ dia: d, n: mapa[d] || 0 });
+  }
+  const media = db.prepare(`SELECT ROUND(AVG(nota), 1) AS m FROM avaliacoes WHERE usuario_id = ? AND criado_em >= datetime('now', '-7 days')`).get(u.id).m;
+  const google = await buscarGoogle(u.google_place_id);
+  res.json({
+    scans: conta('scans_log', '-7 days', '+1 second'),
+    scansAnterior: conta('scans_log', '-14 days', '-7 days'),
+    avaliacoes: conta('avaliacoes', '-7 days', '+1 second'),
+    avaliacoesAnterior: conta('avaliacoes', '-14 days', '-7 days'),
+    mediaSemana: media || null,
+    porDia: dias,
+    google: google && google.nota ? { nota: google.nota, total: google.total } : null,
+  });
 });
 
 module.exports = { publico, lojista };

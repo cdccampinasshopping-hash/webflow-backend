@@ -206,10 +206,16 @@ router.get('/vendas', (req, res) => {
   const valorConfirmado = vendas.filter(v => v.status === 'confirmado').reduce((soma, v) => soma + (v.valor || 0), 0);
   const comissao = Math.round(valorConfirmado * COMISSAO_PERCENTUAL) / 100;
 
+  // Meta do mês (horário de Brasília): vendas confirmadas neste mês x meta definida pelo admin
+  const mesAtual = new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 7);
+  const { meta_mensal: metaMensal } = db.prepare('SELECT meta_mensal FROM usuarios WHERE id = ?').get(req.usuarioId) || {};
+  const vendasMes = db.prepare(`SELECT COUNT(*) AS n FROM vendas WHERE vendedor_id = ? AND status = 'confirmado'
+    AND strftime('%Y-%m', confirmado_em, '-3 hours') = ?`).get(req.usuarioId, mesAtual).n;
+
   res.json({ vendas, resumo: {
     totalConfirmado, totalPendente, total: vendas.length, totalScans,
     comissao, comissaoPercentual: COMISSAO_PERCENTUAL,
-  } });
+  }, meta: { mes: mesAtual, meta: metaMensal || 0, vendasMes } });
 });
 
 // Corrige/define o link do Google de um cliente que o próprio vendedor cadastrou

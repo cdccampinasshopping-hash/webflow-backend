@@ -192,4 +192,21 @@ db.exec(`
   )
 `);
 
+
+// Depoimentos de clientes (cadastrados pelo admin) que aparecem no site
+db.exec(`
+  CREATE TABLE IF NOT EXISTS depoimentos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nome TEXT NOT NULL,
+    negocio TEXT,
+    cidade TEXT,
+    texto TEXT NOT NULL,
+    nota INTEGER NOT NULL DEFAULT 5,
+    visivel INTEGER NOT NULL DEFAULT 1,
+    criado_em TEXT DEFAULT (datetime('now'))
+  )
+`);
+// Meta mensal de vendas confirmadas de cada vendedor (0 = sem meta)
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN meta_mensal INTEGER NOT NULL DEFAULT 0`); } catch (e) { /* já existe */ }
+
 module.exports = db;
