@@ -97,7 +97,7 @@ router.post('/cadastrar', async (req, res) => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       nome, email.toLowerCase().trim(), senha_hash, negocio_nome || null,
-      (['restaurante','comercio','servicos'].includes(segmento) ? segmento : 'restaurante'), planoEscolhido, placeId, linkBruto, gerarCodigoNfc()
+      (['restaurante','bar','comercio','barbearia','salao','clinica','servicos'].includes(segmento) ? segmento : 'restaurante'), planoEscolhido, placeId, linkBruto, gerarCodigoNfc()
     );
 
     const clienteId = resultado.lastInsertRowid;

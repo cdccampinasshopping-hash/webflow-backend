@@ -55,7 +55,7 @@ router.post('/registrar', (req, res) => {
     const resultado = db.prepare(`
       INSERT INTO usuarios (nome, email, senha_hash, negocio_nome, segmento, plano, plano_desejado, is_admin, aceite_termos_em)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(nome, email.toLowerCase().trim(), senha_hash, negocio_nome || null, (['restaurante','comercio','servicos'].includes(segmento) ? segmento : 'restaurante'), planoEscolhido, planoDesejado, isAdmin, new Date().toISOString());
+    `).run(nome, email.toLowerCase().trim(), senha_hash, negocio_nome || null, (['restaurante','bar','comercio','barbearia','salao','clinica','servicos'].includes(segmento) ? segmento : 'restaurante'), planoEscolhido, planoDesejado, isAdmin, new Date().toISOString());
 
     // Gera o código único da placa NFC pro cliente recém-criado
     const codigoNfc = gerarCodigoNfc();

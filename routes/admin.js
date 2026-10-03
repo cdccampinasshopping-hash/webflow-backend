@@ -59,6 +59,15 @@ router.patch('/clientes/:id/comercial', (req, res) => {
   res.json({ usuario: atualizado });
 });
 
+// Corrige o tipo de negócio do cliente (muda o que aparece no painel dele)
+router.patch('/clientes/:id/segmento', (req, res) => {
+  const segmento = String((req.body || {}).segmento || '');
+  if (!['restaurante', 'bar', 'comercio', 'barbearia', 'salao', 'clinica', 'servicos'].includes(segmento)) return res.status(400).json({ erro: 'Tipo de negócio inválido.' });
+  const info = db.prepare('UPDATE usuarios SET segmento = ? WHERE id = ?').run(segmento, req.params.id);
+  if (!info.changes) return res.status(404).json({ erro: 'Usuário não encontrado.' });
+  res.json({ ok: true, segmento });
+});
+
 // Define/corrige o link do Google de qualquer cliente (Place ID, link de avaliação ou link do Maps)
 router.patch('/clientes/:id/google', (req, res) => {
   const usuario = db.prepare('SELECT id FROM usuarios WHERE id = ?').get(req.params.id);

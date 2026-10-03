@@ -262,6 +262,30 @@ lojista.post('/vistos', (req, res) => {
   res.json({ ok: true });
 });
 
+// Clientes da agenda (barbearia/salão/clínica), agrupados pelo WhatsApp — alimenta a tela Clientes
+lojista.get('/clientes', (req, res) => {
+  const linhas = db.prepare(`SELECT nome, telefone, preco, data, hora, status, servico FROM agendamentos
+    WHERE usuario_id = ? AND status != 'cancelado' ORDER BY data, hora`).all(req.usuarioId);
+  const mapa = new Map();
+  linhas.forEach((a) => {
+    const chave = String(a.telefone).replace(/\D/g, '').replace(/^55(?=\d{10,11}$)/, '');
+    if (chave.length < 10) return;
+    const c = mapa.get(chave) || { telefone: chave, nome: null, endereco: null, pedidos: 0, gasto: 0, faltas: 0, primeiro: null, ultimo: null, ultimoServico: null, novidades: false };
+    c.nome = a.nome || c.nome;
+    if (a.status === 'faltou') c.faltas += 1;
+    else {
+      c.pedidos += 1;
+      c.gasto = Math.round((c.gasto + (a.preco || 0)) * 100) / 100;
+    }
+    const quando = `${a.data} ${a.hora}:00`;
+    c.primeiro = c.primeiro || quando;
+    c.ultimo = quando;
+    c.ultimoServico = a.servico;
+    mapa.set(chave, c);
+  });
+  res.json({ clientes: [...mapa.values()].sort((a, b) => b.gasto - a.gasto) });
+});
+
 lojista.get('/horarios', (req, res) => {
   const cfg = lerConfig(minhaLoja(req).agenda_config);
   const servico = cfg.servicos.find((s) => s.id === req.query.servico);
