@@ -258,5 +258,49 @@ try { db.exec(`ALTER TABLE pedidos_online ADD COLUMN novidades INTEGER NOT NULL 
 // Pedido lançado pelo app do garçom
 try { db.exec(`ALTER TABLE pedidos_online ADD COLUMN garcom TEXT`); } catch (e) { /* já existe */ }
 
+// Agenda (barbearia, salão, clínica): configuração da agenda, conexão com o Google Agenda do gestor
+// e link secreto do calendário (.ics) pra assinar em qualquer app de agenda.
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN agenda_config TEXT`); } catch (e) { /* já existe */ }
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN gcal_token TEXT`); } catch (e) { /* já existe */ }
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN gcal_email TEXT`); } catch (e) { /* já existe */ }
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN agenda_ics_token TEXT`); } catch (e) { /* já existe */ }
+
+// Cada horário marcado. data = 'YYYY-MM-DD' e hora = 'HH:MM' no horário de Brasília.
+// zap_status / gcal_status: o que o robô conseguiu fazer (enviado, manual, erro / criado, sem_google, erro)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS agendamentos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    usuario_id INTEGER NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    data TEXT NOT NULL,
+    hora TEXT NOT NULL,
+    duracao INTEGER NOT NULL,
+    servico TEXT NOT NULL,
+    preco REAL,
+    profissional_id TEXT,
+    profissional TEXT,
+    nome TEXT NOT NULL,
+    telefone TEXT NOT NULL,
+    obs TEXT,
+    origem TEXT NOT NULL DEFAULT 'online',
+    status TEXT NOT NULL DEFAULT 'confirmado',
+    visto INTEGER NOT NULL DEFAULT 0,
+    zap_status TEXT,
+    zap_erro TEXT,
+    gcal_status TEXT,
+    gcal_event_id TEXT,
+    gcal_erro TEXT,
+    tentativas INTEGER NOT NULL DEFAULT 0,
+    cancelado_por TEXT,
+    criado_em TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_agendamentos_dia ON agendamentos(usuario_id, data);
+  CREATE INDEX IF NOT EXISTS idx_agendamentos_visto ON agendamentos(usuario_id, visto);
+`);
+// Aviso pro profissional (barbeiro) no WhatsApp: enviado, manual, sem_numero, erro
+try { db.exec(`ALTER TABLE agendamentos ADD COLUMN prof_zap_status TEXT`); } catch (e) { /* já existe */ }
+try { db.exec(`ALTER TABLE agendamentos ADD COLUMN prof_zap_erro TEXT`); } catch (e) { /* já existe */ }
+
 module.exports = db;
 module.exports.PASTA_ARQUIVOS = path.join(path.dirname(dbPath), 'arquivos');

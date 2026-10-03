@@ -16,10 +16,12 @@ const pagamentosRoutes = require('./routes/pagamentos');
 const webhookPagamentosRoutes = require('./routes/webhook-pagamentos');
 const avaliacoesRoutes = require('./routes/avaliacoes');
 const cardapio3d = require('./routes/cardapio3d');
+const agenda = require('./routes/agenda');
 const { exigirLogin, exigirAdmin } = require('./middleware/auth');
 const { iniciarAgendamentoBackup } = require('./jobs/backup');
 const { iniciarVerificacaoAssinaturas } = require('./jobs/assinaturas');
 const { iniciarRelatoriosMensais } = require('./jobs/relatorio-mensal');
+const { iniciarRoboAgenda } = require('./jobs/robo-agenda');
 
 if (!process.env.JWT_SECRET) {
   console.error('ERRO: defina JWT_SECRET no arquivo .env antes de rodar o servidor (veja .env.example).');
@@ -150,6 +152,15 @@ app.use('/api/publico/cardapio3d', cardapio3d.publico);
 app.use('/api/comercial', comercialRoutes);
 app.use('/api/pagamentos/webhook', webhookPagamentosRoutes);
 app.use('/api/pagamentos', exigirLogin, pagamentosRoutes);
+// Agenda online: público (cliente marca o horário), lojista (painel), Google Agenda e calendário .ics
+app.use('/api/publico/agenda', agenda.publico);
+app.use('/api/agenda', exigirLogin, (req, res, next) => {
+  const u = db.prepare('SELECT plano, is_admin FROM usuarios WHERE id = ?').get(req.usuarioId);
+  if (!u || (u.plano !== 'premium' && !u.is_admin)) return res.status(403).json({ erro: 'A agenda online faz parte do plano Premium.' });
+  next();
+}, agenda.lojista);
+app.get('/api/google/callback', agenda.callbackGoogle);
+app.get('/agenda/:token.ics', agenda.feedIcs);
 app.use('/api/publico', avaliacoesRoutes.publico);
 app.use('/api/avaliacoes', avaliacoesRoutes.lojista);
 
@@ -163,4 +174,5 @@ app.listen(PORT, '0.0.0.0', () => {
   iniciarAgendamentoBackup();
   iniciarVerificacaoAssinaturas();
   iniciarRelatoriosMensais();
+  iniciarRoboAgenda();
 });
