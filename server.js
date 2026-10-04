@@ -17,6 +17,7 @@ const webhookPagamentosRoutes = require('./routes/webhook-pagamentos');
 const avaliacoesRoutes = require('./routes/avaliacoes');
 const cardapio3d = require('./routes/cardapio3d');
 const agenda = require('./routes/agenda');
+const notas = require('./routes/notas');
 const { exigirLogin, exigirAdmin } = require('./middleware/auth');
 const { iniciarAgendamentoBackup } = require('./jobs/backup');
 const { iniciarVerificacaoAssinaturas } = require('./jobs/assinaturas');
@@ -31,7 +32,7 @@ if (!process.env.JWT_SECRET) {
 const app = express();
 app.set('trust proxy', 1); // Railway fica atrás de proxy: garante https nos links gerados
 app.use(cors({ origin: process.env.FRONTEND_ORIGIN || '*' }));
-app.use(express.json());
+app.use(express.json({ limit: '1mb' })); // 1 MB: o certificado A1 vai em base64
 
 const SITE_URL = process.env.SITE_URL || 'https://flowsolution.pages.dev';
 
@@ -154,6 +155,8 @@ app.use('/api/pagamentos/webhook', webhookPagamentosRoutes);
 app.use('/api/pagamentos', exigirLogin, pagamentosRoutes);
 // Agenda online: público (cliente marca o horário), lojista (painel), Google Agenda e calendário .ics
 app.use('/api/publico/agenda', agenda.publico);
+app.use('/api/notas', exigirLogin, notas.lojista);
+app.use('/api/publico/notas', notas.publico);
 app.use('/api/agenda', exigirLogin, (req, res, next) => {
   const u = db.prepare('SELECT plano, is_admin FROM usuarios WHERE id = ?').get(req.usuarioId);
   if (!u || (u.plano !== 'premium' && !u.is_admin)) return res.status(403).json({ erro: 'A agenda online faz parte do plano Premium.' });
@@ -175,4 +178,5 @@ app.listen(PORT, '0.0.0.0', () => {
   iniciarVerificacaoAssinaturas();
   iniciarRelatoriosMensais();
   iniciarRoboAgenda();
+  notas.iniciarBuscaSefaz();
 });

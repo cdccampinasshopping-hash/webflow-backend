@@ -260,6 +260,40 @@ try { db.exec(`ALTER TABLE pedidos_online ADD COLUMN garcom TEXT`); } catch (e) 
 // Adicionais, opções (borda, ponto da carne…) e meio a meio de cada item do cardápio (JSON)
 try { db.exec(`ALTER TABLE pratos_3d ADD COLUMN opcoes TEXT`); } catch (e) { /* já existe */ }
 
+// Notas fiscais de compra que chegam sozinhas (por e-mail ou pela SEFAZ) pra dar entrada no estoque
+db.exec(`
+  CREATE TABLE IF NOT EXISTS notas_entrada (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    usuario_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+    chave TEXT NOT NULL,
+    origem TEXT NOT NULL,              -- email | sefaz
+    emitente TEXT, cnpj_emitente TEXT, numero TEXT, valor REAL, emitida_em TEXT,
+    xml TEXT,                          -- NF-e completa (sem ela, só o resumo da SEFAZ)
+    status TEXT NOT NULL DEFAULT 'pendente', -- aguardando | pendente | importada | ignorada | cancelada
+    ciencia INTEGER NOT NULL DEFAULT 0,
+    criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    atualizado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(usuario_id, chave)
+  );
+  CREATE INDEX IF NOT EXISTS idx_notas_entrada_usuario ON notas_entrada(usuario_id, status);
+  CREATE TABLE IF NOT EXISTS sefaz_config (
+    usuario_id INTEGER PRIMARY KEY REFERENCES usuarios(id) ON DELETE CASCADE,
+    cnpj TEXT, cpf TEXT, uf TEXT NOT NULL,
+    certificado TEXT NOT NULL,         -- .pfx cifrado (AES-256-GCM)
+    senha TEXT NOT NULL,               -- senha cifrada
+    titular TEXT, validade TEXT,
+    ult_nsu TEXT NOT NULL DEFAULT '0',
+    proxima_consulta INTEGER NOT NULL DEFAULT 0,
+    ultima_consulta TEXT, ultimo_status TEXT, erros_seguidos INTEGER NOT NULL DEFAULT 0,
+    criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS emails_recebidos (
+    email_id TEXT PRIMARY KEY,
+    criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN notas_email_token TEXT`); } catch (e) { /* já existe */ }
+
 // Agenda (barbearia, salão, clínica): configuração da agenda, conexão com o Google Agenda do gestor
 // e link secreto do calendário (.ics) pra assinar em qualquer app de agenda.
 try { db.exec(`ALTER TABLE usuarios ADD COLUMN agenda_config TEXT`); } catch (e) { /* já existe */ }
