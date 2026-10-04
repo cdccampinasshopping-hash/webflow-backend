@@ -25,7 +25,7 @@ router.use(exigirLogin, exigirComercial);
 const COMISSAO_PERCENTUAL = Number(process.env.COMISSAO_PERCENTUAL || 30);
 
 const PLANOS_VALIDOS = ['basico', 'pro', 'premium'];
-const PRECOS = { basico: 80, pro: 200, premium: 300 };
+const PRECOS = { basico: 80, pro: 180, premium: 300 };
 
 function gerarCodigoNfc() {
   return crypto.randomBytes(4).toString('hex');

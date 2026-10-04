@@ -9,7 +9,7 @@ const client = new MercadoPagoConfig({ accessToken: process.env.MERCADOPAGO_ACCE
 const PLANOS_VALIDOS = ['basico', 'pro', 'premium'];
 const PRECOS = {
   basico: { titulo: 'Flow Solution — Plano Básico', valor: 80 },
-  pro: { titulo: 'Flow Solution — Plano Pró', valor: 200 },
+  pro: { titulo: 'Flow Solution — Plano Pró (site de apresentação + placa de avaliação)', valor: 180 },
   premium: { titulo: 'Flow Solution — Plano Premium (ativação)', valor: 300 },
 };
 
