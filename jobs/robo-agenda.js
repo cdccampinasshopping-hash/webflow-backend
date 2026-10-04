@@ -11,7 +11,7 @@ const gcal = require('../google-agenda');
 // Remarcou ou cancelou: atualiza o Google e avisa cliente e barbeiro de novo.
 // Se algo falhar (Google fora do ar, WhatsApp recusou), tenta de novo a cada 5 minutos, até 3 vezes.
 
-const SITE_URL = process.env.SITE_URL || 'https://flowsolution.netlify.app';
+const SITE_URL = process.env.SITE_URL || 'https://flowsolution.pages.dev';
 const DIAS = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
 const MODELO_CLIENTE = () => process.env.WHATSAPP_TEMPLATE || 'confirmacao_agendamento';
 const MODELO_PROF = () => process.env.WHATSAPP_TEMPLATE_PROFISSIONAL || 'novo_agendamento_profissional';

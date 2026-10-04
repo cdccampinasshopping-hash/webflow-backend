@@ -11,7 +11,7 @@ const robo = require('../jobs/robo-agenda');
 //  - público: o cliente escolhe serviço, dia e horário pelo link da loja e marca sozinho
 // Todo agendamento novo passa pelo robô (jobs/robo-agenda.js): WhatsApp + Google Agenda + aviso no painel.
 
-const SITE_URL = process.env.SITE_URL || 'https://flowsolution.netlify.app';
+const SITE_URL = process.env.SITE_URL || 'https://flowsolution.pages.dev';
 const FUSO = -3; // Brasília
 const HORA = /^([01]\d|2[0-3]):[0-5]\d$/;
 const DATA = /^\d{4}-\d{2}-\d{2}$/;

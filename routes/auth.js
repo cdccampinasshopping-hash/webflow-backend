@@ -134,7 +134,7 @@ router.post('/esqueci-senha', async (req, res) => {
     db.prepare('UPDATE usuarios SET reset_token_hash = ?, reset_token_expira = ? WHERE id = ?')
       .run(tokenHash, expira, usuario.id);
 
-    const siteUrl = process.env.SITE_URL || 'https://webflowservices.com';
+    const siteUrl = process.env.SITE_URL || 'https://flowsolution.pages.dev';
     const link = `${siteUrl}/webflow.html?redefinir=${tokenBruto}`;
 
     try {

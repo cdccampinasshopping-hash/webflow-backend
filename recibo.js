@@ -1,7 +1,7 @@
 const db = require('./db');
 const { enviarEmail } = require('./email');
 
-const SITE_URL = process.env.SITE_URL || 'https://flowsolution.netlify.app';
+const SITE_URL = process.env.SITE_URL || 'https://flowsolution.pages.dev';
 const NOME_PLANO = { basico: 'Básico', pro: 'Pró', premium: 'Premium' };
 const FORMA = { pix: 'Pix', dinheiro: 'Dinheiro', cartao: 'Cartão', mercadopago: 'Mercado Pago' };
 

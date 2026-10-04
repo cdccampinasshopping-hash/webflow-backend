@@ -13,7 +13,7 @@ const PRECOS = {
   premium: { titulo: 'Flow Solution — Plano Premium (ativação)', valor: 300 },
 };
 
-const SITE_URL = process.env.SITE_URL || 'https://webflowservices.com';
+const SITE_URL = process.env.SITE_URL || 'https://flowsolution.pages.dev';
 
 function urlBackend(req) {
   return process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;

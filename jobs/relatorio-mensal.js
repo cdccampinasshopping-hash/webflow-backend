@@ -4,7 +4,7 @@ const { enviarEmail } = require('../email');
 // Relatório mensal do lojista: no dia 1º, cada lojista recebe por e-mail o resumo
 // do mês anterior (scans da placa, avaliações, nota média, melhores comentários).
 
-const SITE_URL = process.env.SITE_URL || 'https://flowsolution.netlify.app';
+const SITE_URL = process.env.SITE_URL || 'https://flowsolution.pages.dev';
 const FUSO = -3; // horário de Brasília (sem horário de verão desde 2019)
 const MESES = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
 

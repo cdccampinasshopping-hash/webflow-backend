@@ -33,7 +33,7 @@ app.set('trust proxy', 1); // Railway fica atrás de proxy: garante https nos li
 app.use(cors({ origin: process.env.FRONTEND_ORIGIN || '*' }));
 app.use(express.json());
 
-const SITE_URL = process.env.SITE_URL || 'https://webflowservices.com';
+const SITE_URL = process.env.SITE_URL || 'https://flowsolution.pages.dev';
 
 // Pra monitor de disponibilidade: confere que o servidor e o banco respondem
 app.get('/health', (req, res) => {

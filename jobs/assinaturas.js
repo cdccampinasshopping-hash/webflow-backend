@@ -6,7 +6,7 @@ const { enviarEmail, emailInterno } = require('../email');
 const DIAS_POR_PAGAMENTO = 35;
 // Plano pro qual o cliente volta quando a mensalidade vence
 const PLANO_SEM_MENSALIDADE = 'pro';
-const SITE_URL = process.env.SITE_URL || 'https://flowsolution.netlify.app';
+const SITE_URL = process.env.SITE_URL || 'https://flowsolution.pages.dev';
 
 // Libera/estende o Premium a partir da data do pagamento. Idempotente: receber o mesmo
 // aviso do Mercado Pago duas vezes não soma dias a mais.
