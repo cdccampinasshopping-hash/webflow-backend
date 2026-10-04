@@ -139,6 +139,29 @@ function limparConfig(b, atual, donoId) {
 function configSegura(c) {
   return { ...c, garcons: (c.garcons || []).map((g) => ({ id: g.id, nome: g.nome, temPin: !!g.pinHash })) };
 }
+/* ---------- adicionais, opções e meio a meio ---------- */
+// { meio: true|false, grupos: [{ nome, min, max, itens: [{ nome, preco }] }] }
+function lerOpcoes(texto) {
+  try { const o = JSON.parse(texto || 'null'); if (o && Array.isArray(o.grupos)) return o; } catch (e) { /* inválido */ }
+  return { meio: false, grupos: [] };
+}
+function limparOpcoes(b) {
+  const o = b && typeof b === 'object' ? b : {};
+  const grupos = (Array.isArray(o.grupos) ? o.grupos : []).slice(0, 8).map((g) => {
+    const itens = (Array.isArray(g && g.itens) ? g.itens : []).slice(0, 30).map((i) => {
+      const nome = String((i && i.nome) || '').trim().slice(0, 50);
+      const preco = lerPreco(i && i.preco);
+      return { nome, preco: preco > 0 ? preco : 0 };
+    }).filter((i) => i.nome);
+    const n = itens.length;
+    let max = parseInt(g && g.max, 10); if (!(max >= 1)) max = n; max = Math.min(max, n);
+    let min = parseInt(g && g.min, 10); if (!(min >= 0)) min = 0; min = Math.min(min, max);
+    return { nome: String((g && g.nome) || '').trim().slice(0, 40) || 'Opções', min, max, itens };
+  }).filter((g) => g.itens.length);
+  return { meio: !!o.meio, grupos };
+}
+function temOpcoes(o) { return !!(o && (o.meio || (o.grupos && o.grupos.length))); }
+
 const STATUS = ['novo', 'preparo', 'pronto', 'entregue', 'cancelado'];
 
 function pedidoParaJson(p) {
@@ -154,6 +177,7 @@ function pratoParaJson(req, p) {
     id: p.id, nome: p.nome, descricao: p.descricao, categoria: p.categoria, preco: p.preco,
     ordem: p.ordem, ativo: !!p.ativo, visualizacoes: p.visualizacoes,
     modelo: urlArquivo(req, p.modelo), foto: urlArquivo(req, p.foto),
+    opcoes: temOpcoes(lerOpcoes(p.opcoes)) ? lerOpcoes(p.opcoes) : null,
   };
 }
 
@@ -249,8 +273,9 @@ function rotasGestao(donoDe) {
     const total = db.prepare('SELECT COUNT(*) AS n FROM pratos_3d WHERE usuario_id = ?').get(dono).n;
     if (total >= MAX_PRATOS) return res.status(400).json({ erro: `O cardápio 3D aceita até ${MAX_PRATOS} pratos.` });
     const ordem = (db.prepare('SELECT MAX(ordem) AS m FROM pratos_3d WHERE usuario_id = ?').get(dono).m || 0) + 1;
-    const info = db.prepare('INSERT INTO pratos_3d (usuario_id, nome, descricao, categoria, preco, ordem) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(dono, nome, limparTexto(b.descricao, 300), limparTexto(b.categoria, 40), preco, ordem);
+    const op = 'opcoes' in b ? limparOpcoes(b.opcoes) : null;
+    const info = db.prepare('INSERT INTO pratos_3d (usuario_id, nome, descricao, categoria, preco, ordem, opcoes) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(dono, nome, limparTexto(b.descricao, 300), limparTexto(b.categoria, 40), preco, ordem, temOpcoes(op) ? JSON.stringify(op) : null);
     const p = db.prepare('SELECT * FROM pratos_3d WHERE id = ?').get(info.lastInsertRowid);
     res.status(201).json({ prato: pratoParaJson(req, p) });
   });
@@ -265,8 +290,9 @@ function rotasGestao(donoDe) {
     if ('preco' in b) { novo.preco = lerPreco(b.preco); if (novo.preco === undefined) return res.status(400).json({ erro: 'Preço inválido.' }); }
     if ('ativo' in b) novo.ativo = b.ativo ? 1 : 0;
     if ('ordem' in b && Number.isInteger(b.ordem)) novo.ordem = b.ordem;
-    db.prepare('UPDATE pratos_3d SET nome = ?, descricao = ?, categoria = ?, preco = ?, ativo = ?, ordem = ? WHERE id = ?')
-      .run(novo.nome, novo.descricao, novo.categoria, novo.preco, novo.ativo, novo.ordem, p.id);
+    if ('opcoes' in b) { const op = limparOpcoes(b.opcoes); novo.opcoes = temOpcoes(op) ? JSON.stringify(op) : null; }
+    db.prepare('UPDATE pratos_3d SET nome = ?, descricao = ?, categoria = ?, preco = ?, ativo = ?, ordem = ?, opcoes = ? WHERE id = ?')
+      .run(novo.nome, novo.descricao, novo.categoria, novo.preco, novo.ativo, novo.ordem, novo.opcoes, p.id);
     res.json({ prato: pratoParaJson(req, db.prepare('SELECT * FROM pratos_3d WHERE id = ?').get(p.id)) });
   });
 
@@ -396,13 +422,50 @@ publico.post('/:codigo/pedido', (req, res) => {
   const troco = pagamento === 'Dinheiro' ? limparTexto(b.troco, 20) : null;
 
   const pedidos = Array.isArray(b.itens) ? b.itens.slice(0, 40) : [];
-  const buscar = db.prepare('SELECT id, nome, preco FROM pratos_3d WHERE id = ? AND usuario_id = ? AND ativo = 1');
+  const buscar = db.prepare('SELECT id, nome, preco, categoria, opcoes FROM pratos_3d WHERE id = ? AND usuario_id = ? AND ativo = 1');
   const itens = [];
   for (const it of pedidos) {
     const qtd = parseInt(it && it.qtd, 10);
     const prato = buscar.get(Number(it && it.id), loja.id);
     if (!prato || !(qtd >= 1 && qtd <= 50)) continue;
-    itens.push({ id: prato.id, nome: prato.nome, qtd, preco: prato.preco || 0, obs: limparTexto(it.obs, 120) });
+    const op = lerOpcoes(prato.opcoes);
+    let nome = prato.nome;
+    let unit = prato.preco || 0;
+    // Meio a meio: os dois sabores precisam aceitar e ser da mesma categoria; cobra o mais caro
+    if (it.meio != null && it.meio !== '') {
+      const outro = buscar.get(Number(it.meio), loja.id);
+      const opOutro = outro && lerOpcoes(outro.opcoes);
+      if (!outro || outro.id === prato.id || !op.meio || !opOutro.meio || (outro.categoria || '') !== (prato.categoria || '')) {
+        return res.status(400).json({ erro: `O meio a meio de "${prato.nome}" não está mais disponível. Tire do pedido e escolha de novo.` });
+      }
+      nome = `½ ${prato.nome} + ½ ${outro.nome}`;
+      unit = Math.max(unit, outro.preco || 0);
+    }
+    // Opções escolhidas: lista de [grupo, item]
+    const vistos = new Set();
+    const porGrupo = op.grupos.map(() => []);
+    for (const par of (Array.isArray(it.opcoes) ? it.opcoes.slice(0, 60) : [])) {
+      const g = parseInt(par && par[0], 10), i = parseInt(par && par[1], 10);
+      const item = op.grupos[g] && op.grupos[g].itens[i];
+      if (!item || vistos.has(`${g}-${i}`)) {
+        return res.status(400).json({ erro: `As opções de "${prato.nome}" mudaram. Tire do pedido e escolha de novo.` });
+      }
+      vistos.add(`${g}-${i}`);
+      porGrupo[g].push(item);
+    }
+    const adicionais = [];
+    for (let g = 0; g < op.grupos.length; g++) {
+      const grupo = op.grupos[g], esc = porGrupo[g];
+      if (esc.length < grupo.min || esc.length > grupo.max) {
+        return res.status(400).json({ erro: `Em "${prato.nome}", confira a escolha de ${grupo.nome.toLowerCase()}.` });
+      }
+      if (esc.length) adicionais.push(`${grupo.nome}: ${esc.map((x) => x.nome).join(', ')}`);
+      unit += esc.reduce((s, x) => s + (x.preco || 0), 0);
+    }
+    unit = Math.round(unit * 100) / 100;
+    const linha = { id: prato.id, nome, qtd, preco: unit, obs: limparTexto(it.obs, 120) };
+    if (adicionais.length) linha.adicionais = adicionais;
+    itens.push(linha);
   }
   if (!itens.length) return res.status(400).json({ erro: 'Seu pedido está vazio. Escolha algum item do cardápio.' });
 

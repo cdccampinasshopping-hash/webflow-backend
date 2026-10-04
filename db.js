@@ -257,6 +257,8 @@ db.exec(`
 try { db.exec(`ALTER TABLE pedidos_online ADD COLUMN novidades INTEGER NOT NULL DEFAULT 0`); } catch (e) { /* já existe */ }
 // Pedido lançado pelo app do garçom
 try { db.exec(`ALTER TABLE pedidos_online ADD COLUMN garcom TEXT`); } catch (e) { /* já existe */ }
+// Adicionais, opções (borda, ponto da carne…) e meio a meio de cada item do cardápio (JSON)
+try { db.exec(`ALTER TABLE pratos_3d ADD COLUMN opcoes TEXT`); } catch (e) { /* já existe */ }
 
 // Agenda (barbearia, salão, clínica): configuração da agenda, conexão com o Google Agenda do gestor
 // e link secreto do calendário (.ics) pra assinar em qualquer app de agenda.
