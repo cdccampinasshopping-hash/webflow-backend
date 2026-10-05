@@ -18,11 +18,13 @@ const avaliacoesRoutes = require('./routes/avaliacoes');
 const cardapio3d = require('./routes/cardapio3d');
 const agenda = require('./routes/agenda');
 const notas = require('./routes/notas');
+const checklist = require('./routes/checklist');
 const { exigirLogin, exigirAdmin } = require('./middleware/auth');
 const { iniciarAgendamentoBackup } = require('./jobs/backup');
 const { iniciarVerificacaoAssinaturas } = require('./jobs/assinaturas');
 const { iniciarRelatoriosMensais } = require('./jobs/relatorio-mensal');
 const { iniciarRoboAgenda } = require('./jobs/robo-agenda');
+const { iniciarAvisosChecklist } = require('./jobs/checklist-avisos');
 
 if (!process.env.JWT_SECRET) {
   console.error('ERRO: defina JWT_SECRET no arquivo .env antes de rodar o servidor (veja .env.example).');
@@ -147,6 +149,9 @@ app.use('/api/dados', exigirLogin, dadosRoutes);
 app.use('/api/suporte', exigirLogin, suporteRoutes);
 // Admin monta o cardápio 3D em nome do cliente: /api/admin/cardapio3d?cliente=ID
 app.use('/api/admin/cardapio3d', exigirLogin, exigirAdmin, cardapio3d.rotasGestao((req) => Number(req.query.cliente)));
+// Checklist diário do gerente/líder (comprovantes) e relatórios pro admin
+app.use('/api/admin/checklist', exigirLogin, exigirAdmin, checklist.admin);
+app.use('/api/checklist', exigirLogin, checklist.lojista);
 app.use('/api/admin', exigirLogin, exigirAdmin, adminRoutes);
 app.use('/api/cardapio3d', exigirLogin, cardapio3d.exigirPremium, cardapio3d.rotasGestao((req) => req.usuarioId));
 app.use('/api/publico/cardapio3d', cardapio3d.publico);
@@ -178,5 +183,6 @@ app.listen(PORT, '0.0.0.0', () => {
   iniciarVerificacaoAssinaturas();
   iniciarRelatoriosMensais();
   iniciarRoboAgenda();
+  iniciarAvisosChecklist();
   notas.iniciarBuscaSefaz();
 });
