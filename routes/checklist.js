@@ -181,7 +181,7 @@ function resumo(lojas, ini, fim) {
 
 function lojasAtivas() {
   return db.prepare(`SELECT id, nome, email, negocio_nome, checklist_desde FROM usuarios
-    WHERE (checklist_ativo = 1 OR cargo = 'checklist') AND is_admin = 0 AND cargo IN ('lojista', 'checklist') ORDER BY COALESCE(negocio_nome, nome)`).all();
+    WHERE checklist_ativo = 1 AND is_admin = 0 AND cargo IN ('lojista', 'checklist') ORDER BY COALESCE(negocio_nome, nome)`).all();
 }
 
 // ---------------- rotas do lojista ----------------
@@ -189,7 +189,7 @@ const lojista = express.Router();
 
 lojista.use((req, res, next) => {
   const u = db.prepare('SELECT checklist_ativo, cargo FROM usuarios WHERE id = ?').get(req.usuarioId);
-  if (!u || (!u.checklist_ativo && u.cargo !== 'checklist')) return res.status(403).json({ erro: 'O checklist diário não está ativado pra sua conta. Fale com a Flow Solution.' });
+  if (!u || !u.checklist_ativo) return res.status(403).json({ erro: 'O checklist diário não está ativado pra sua conta. Fale com a Flow Solution.' });
   next();
 });
 
@@ -275,6 +275,60 @@ lojista.get('/arquivo/:id', (req, res) => {
 const admin = express.Router();
 
 admin.get('/modelo', (req, res) => res.json({ turnos: TURNOS, total: TOTAL, hoje: hojeBrasilia() }));
+
+// ---------- usuários do checklist (o controle e o admin criam as contas de quem preenche) ----------
+const bcrypt = require('bcryptjs');
+function usuarioChecklistJson(u) {
+  return { id: u.id, nome: u.nome, email: u.email, negocio_nome: u.negocio_nome, checklist_ativo: u.checklist_ativo, checklist_desde: u.checklist_desde, criado_em: u.criado_em };
+}
+
+admin.get('/usuarios', (req, res) => {
+  const usuarios = db.prepare(`SELECT id, nome, email, negocio_nome, checklist_ativo, checklist_desde, criado_em FROM usuarios
+    WHERE cargo = 'checklist' AND is_admin = 0 ORDER BY COALESCE(negocio_nome, nome)`).all();
+  res.json({ usuarios: usuarios.map(usuarioChecklistJson) });
+});
+
+// Cria a conta de quem vai preencher o checklist (sempre com o cargo "checklist")
+admin.post('/usuarios', (req, res) => {
+  const b = req.body || {};
+  const nome = String(b.nome || '').trim().slice(0, 80);
+  const email = String(b.email || '').trim().toLowerCase().slice(0, 120);
+  const loja = String(b.negocio_nome || '').trim().slice(0, 80);
+  const senha = String(b.senha || '');
+  if (!nome || !email || !loja) return res.status(400).json({ erro: 'Preencha nome, loja e e-mail.' });
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.status(400).json({ erro: 'E-mail inválido.' });
+  if (senha.length < 6) return res.status(400).json({ erro: 'A senha precisa ter pelo menos 6 caracteres.' });
+  if (email === String(process.env.ADMIN_EMAIL || '').toLowerCase().trim()) return res.status(400).json({ erro: 'Esse e-mail é da conta administrativa.' });
+  try {
+    const r = db.prepare(`INSERT INTO usuarios (nome, email, senha_hash, negocio_nome, segmento, plano, cargo, checklist_ativo, checklist_desde)
+      VALUES (?, ?, ?, ?, 'comercio', 'basico', 'checklist', 1, ?)`).run(nome, email, bcrypt.hashSync(senha, 10), loja, hojeBrasilia());
+    const u = db.prepare('SELECT * FROM usuarios WHERE id = ?').get(r.lastInsertRowid);
+    res.status(201).json({ usuario: usuarioChecklistJson(u) });
+  } catch (e) {
+    if (String(e.message).includes('UNIQUE')) return res.status(409).json({ erro: 'Já existe uma conta com esse e-mail.' });
+    console.error(e);
+    res.status(500).json({ erro: 'Não foi possível criar o usuário.' });
+  }
+});
+
+// Nova senha / ativar ou pausar — só pra contas com cargo "checklist"
+admin.patch('/usuarios/:id', (req, res) => {
+  const u = db.prepare("SELECT id FROM usuarios WHERE id = ? AND cargo = 'checklist' AND is_admin = 0").get(req.params.id);
+  if (!u) return res.status(404).json({ erro: 'Usuário do checklist não encontrado.' });
+  const b = req.body || {};
+  if (b.senha !== undefined) {
+    if (String(b.senha).length < 6) return res.status(400).json({ erro: 'A senha precisa ter pelo menos 6 caracteres.' });
+    db.prepare('UPDATE usuarios SET senha_hash = ? WHERE id = ?').run(bcrypt.hashSync(String(b.senha), 10), u.id);
+  }
+  if (b.ativo !== undefined) {
+    // Ao reativar, as faltas voltam a contar a partir de hoje (o período pausado não conta)
+    const atual = db.prepare('SELECT checklist_ativo FROM usuarios WHERE id = ?').get(u.id);
+    if (b.ativo && !atual.checklist_ativo) db.prepare('UPDATE usuarios SET checklist_ativo = 1, checklist_desde = ? WHERE id = ?').run(hojeBrasilia(), u.id);
+    if (!b.ativo) db.prepare('UPDATE usuarios SET checklist_ativo = 0 WHERE id = ?').run(u.id);
+  }
+  if (b.negocio_nome !== undefined && String(b.negocio_nome).trim()) db.prepare('UPDATE usuarios SET negocio_nome = ? WHERE id = ?').run(String(b.negocio_nome).trim().slice(0, 80), u.id);
+  res.json({ usuario: usuarioChecklistJson(db.prepare('SELECT * FROM usuarios WHERE id = ?').get(u.id)) });
+});
 
 // Relatório de todas as lojas com checklist: ?periodo=dia|semana|mes&data=YYYY-MM-DD
 admin.get('/relatorio', (req, res) => {
