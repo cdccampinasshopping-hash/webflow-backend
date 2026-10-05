@@ -181,15 +181,15 @@ function resumo(lojas, ini, fim) {
 
 function lojasAtivas() {
   return db.prepare(`SELECT id, nome, email, negocio_nome, checklist_desde FROM usuarios
-    WHERE checklist_ativo = 1 AND is_admin = 0 AND is_comercial = 0 ORDER BY COALESCE(negocio_nome, nome)`).all();
+    WHERE (checklist_ativo = 1 OR cargo = 'checklist') AND is_admin = 0 AND cargo IN ('lojista', 'checklist') ORDER BY COALESCE(negocio_nome, nome)`).all();
 }
 
 // ---------------- rotas do lojista ----------------
 const lojista = express.Router();
 
 lojista.use((req, res, next) => {
-  const u = db.prepare('SELECT checklist_ativo FROM usuarios WHERE id = ?').get(req.usuarioId);
-  if (!u || !u.checklist_ativo) return res.status(403).json({ erro: 'O checklist diário não está ativado pra sua conta. Fale com a Flow Solution.' });
+  const u = db.prepare('SELECT checklist_ativo, cargo FROM usuarios WHERE id = ?').get(req.usuarioId);
+  if (!u || (!u.checklist_ativo && u.cargo !== 'checklist')) return res.status(403).json({ erro: 'O checklist diário não está ativado pra sua conta. Fale com a Flow Solution.' });
   next();
 });
 
@@ -309,8 +309,9 @@ admin.get('/arquivo/:id', (req, res) => {
   enviarArquivo(res, r);
 });
 
-// Liga/desliga o checklist pra um cliente
+// Liga/desliga o checklist pra um cliente (só o admin, não o controle)
 admin.patch('/clientes/:id', (req, res) => {
+  if (!req.ehAdmin) return res.status(403).json({ erro: 'Só o admin pode ligar ou desligar o checklist.' });
   const u = db.prepare('SELECT id, checklist_ativo, checklist_desde FROM usuarios WHERE id = ? AND is_admin = 0').get(req.params.id);
   if (!u) return res.status(404).json({ erro: 'Cliente não encontrado.' });
   const ativo = (req.body || {}).ativo ? 1 : 0;

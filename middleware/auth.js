@@ -34,4 +34,14 @@ function exigirComercial(req, res, next) {
   next();
 }
 
-module.exports = { exigirLogin, exigirAdmin, exigirComercial };
+// Relatórios do checklist: admin ou quem tem o cargo "controle"
+function exigirControle(req, res, next) {
+  const usuario = db.prepare('SELECT is_admin, cargo FROM usuarios WHERE id = ?').get(req.usuarioId);
+  if (!usuario || (!usuario.is_admin && usuario.cargo !== 'controle')) {
+    return res.status(403).json({ erro: 'Essa conta não tem acesso aos relatórios do checklist.' });
+  }
+  req.ehAdmin = !!usuario.is_admin;
+  next();
+}
+
+module.exports = { exigirLogin, exigirAdmin, exigirComercial, exigirControle };

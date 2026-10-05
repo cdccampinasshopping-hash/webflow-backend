@@ -14,7 +14,7 @@ const COMISSAO_PERCENTUAL = Number(process.env.COMISSAO_PERCENTUAL || 30);
 
 router.get('/clientes', (req, res) => {
   const clientes = db.prepare(`
-    SELECT id, nome, email, negocio_nome, segmento, plano, is_comercial, codigo_nfc, google_place_id, link_google, nfc_scans, checklist_ativo, criado_em
+    SELECT id, nome, email, negocio_nome, segmento, plano, is_comercial, cargo, codigo_nfc, google_place_id, link_google, nfc_scans, checklist_ativo, criado_em
     FROM usuarios
     WHERE is_admin = 0
     ORDER BY criado_em DESC
@@ -53,10 +53,30 @@ router.patch('/clientes/:id/comercial', (req, res) => {
     return res.status(404).json({ erro: 'Usuário não encontrado.' });
   }
 
-  db.prepare('UPDATE usuarios SET is_comercial = ? WHERE id = ?').run(is_comercial ? 1 : 0, id);
+  db.prepare(`UPDATE usuarios SET is_comercial = ?, cargo = CASE WHEN ? = 1 THEN 'comercial' WHEN cargo = 'comercial' THEN 'lojista' ELSE cargo END WHERE id = ?`)
+    .run(is_comercial ? 1 : 0, is_comercial ? 1 : 0, id);
 
   const atualizado = db.prepare('SELECT id, nome, email, is_comercial FROM usuarios WHERE id = ?').get(id);
   res.json({ usuario: atualizado });
+});
+
+// Define o cargo da conta: lojista, comercial, controle (vê os relatórios do checklist) ou checklist (preenche as perguntas)
+const CARGOS = ['lojista', 'comercial', 'controle', 'checklist'];
+router.patch('/clientes/:id/cargo', (req, res) => {
+  const cargo = (req.body || {}).cargo;
+  if (!CARGOS.includes(cargo)) return res.status(400).json({ erro: `Cargo inválido. Use um de: ${CARGOS.join(', ')}.` });
+  const u = db.prepare('SELECT id, is_admin, cargo, checklist_ativo, checklist_desde FROM usuarios WHERE id = ?').get(req.params.id);
+  if (!u) return res.status(404).json({ erro: 'Usuário não encontrado.' });
+  if (u.is_admin) return res.status(403).json({ erro: 'A conta administrativa não muda de cargo.' });
+  const hoje = new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 10);
+  // Checklist preenche as perguntas: liga o checklist (as faltas contam a partir de hoje)
+  let ativo = u.checklist_ativo, desde = u.checklist_desde;
+  if (cargo === 'checklist' && !ativo) { ativo = 1; desde = hoje; }
+  if (cargo === 'comercial' || cargo === 'controle') ativo = 0;
+  if (u.cargo === 'checklist' && cargo === 'lojista') ativo = 0;
+  db.prepare('UPDATE usuarios SET cargo = ?, is_comercial = ?, checklist_ativo = ?, checklist_desde = ? WHERE id = ?')
+    .run(cargo, cargo === 'comercial' ? 1 : 0, ativo, desde, u.id);
+  res.json({ usuario: db.prepare('SELECT id, cargo, is_comercial, checklist_ativo, checklist_desde FROM usuarios WHERE id = ?').get(u.id) });
 });
 
 // Corrige o tipo de negócio do cliente (muda o que aparece no painel dele)

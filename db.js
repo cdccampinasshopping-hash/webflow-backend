@@ -51,9 +51,15 @@ catch (e) { /* coluna já existe, tudo bem */ }
 try { db.exec(`ALTER TABLE usuarios ADD COLUMN link_google TEXT`); }
 catch (e) { /* coluna já existe, tudo bem */ }
 
+// Cargo da conta (dado pelo admin): lojista, comercial, controle (relatórios do checklist) ou checklist (preenche as perguntas)
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN cargo TEXT NOT NULL DEFAULT 'lojista'`); }
+catch (e) { /* coluna já existe, tudo bem */ }
+
 // Marca quem é do time comercial (etiquetado manualmente pelo admin)
 try { db.exec(`ALTER TABLE usuarios ADD COLUMN is_comercial INTEGER NOT NULL DEFAULT 0`); }
 catch (e) { /* coluna já existe, tudo bem */ }
+// Quem já era do comercial antes do campo cargo existir
+db.exec(`UPDATE usuarios SET cargo = 'comercial' WHERE is_comercial = 1 AND cargo = 'lojista'`);
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS suporte (
