@@ -27,7 +27,6 @@ const TURNOS = [
     ['m8', 'Conferir se os vendedores estão enviando o acompanhamento individual no grupo da loja.'],
     ['m9', 'Conversar individualmente com os vendedores para ativá-los e apresentar os dados analisados no Orbitta e nos grupos.'],
     ['m10', 'Com base nos dados analisados, definir estratégias e prioridades para o dia.'],
-    ['m11', 'Passar a agenda de treinamentos do dia para os vendedores.'],
   ] },
   { id: 'tarde', titulo: 'Tarde', horario: '16:00', itens: [
     ['t1', 'Enviar parcial no grupo da loja com as vendas por vendedor.'],
