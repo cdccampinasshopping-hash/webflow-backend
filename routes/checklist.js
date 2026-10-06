@@ -44,8 +44,6 @@ const TURNOS = [
     ['n3', 'Conferir o controle de atendimentos.'],
     ['n4', 'Conferir o fechamento do caixa.'],
     ['n5', 'Conferir o vídeo e o grupo do PRT.'],
-    ['n6', 'Alinhar e informar ao supervisor o que será realizado no dia seguinte.'],
-    ['n7', 'Definir a estratégia diária para o próximo dia.'],
   ] },
 ].map((t) => ({ ...t, itens: t.itens.map(([id, texto]) => ({ id, texto })) }));
 const ITENS = TURNOS.flatMap((t) => t.itens.map((i) => ({ ...i, turno: t.id })));
