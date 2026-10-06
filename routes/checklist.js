@@ -85,6 +85,25 @@ db.exec(`
     PRIMARY KEY (usuario_id, data)
   )
 `);
+// Todos os comprovantes (uma pergunta pode ter vários). checklist_respostas guarda 1 linha por pergunta respondida.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS checklist_arquivos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    usuario_id INTEGER NOT NULL,
+    data TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    arquivo TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    nome_arquivo TEXT,
+    criado_em TEXT DEFAULT (datetime('now'))
+  )
+`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_ck_arquivos ON checklist_arquivos(usuario_id, data, item_id)`);
+// Comprovantes enviados antes de existir a tabela de vários arquivos
+db.exec(`INSERT INTO checklist_arquivos (usuario_id, data, item_id, arquivo, mime, nome_arquivo, criado_em)
+  SELECT r.usuario_id, r.data, r.item_id, r.arquivo, r.mime, r.nome_arquivo, r.criado_em FROM checklist_respostas r
+  WHERE NOT EXISTS (SELECT 1 FROM checklist_arquivos a WHERE a.usuario_id = r.usuario_id AND a.data = r.data AND a.item_id = r.item_id)`);
+const MAX_ARQUIVOS = 10;
 db.exec(`CREATE TABLE IF NOT EXISTS checklist_avisos (data TEXT PRIMARY KEY, enviado_em TEXT DEFAULT (datetime('now')))`);
 
 // ---------------- datas (sempre no horário de Brasília) ----------------
@@ -139,11 +158,21 @@ function enviarArquivo(res, r) {
 }
 
 // ---------------- montagem dos dados ----------------
-function respostaJson(r) {
-  return { id: r.id, item_id: r.item_id, data: r.data, mime: r.mime, nome_arquivo: r.nome_arquivo, obs: r.obs, hora: paraHoraBrasilia(r.criado_em) };
+function arquivosDe(usuarioId, data, itemId) {
+  const sql = 'SELECT id, item_id, mime, nome_arquivo, criado_em FROM checklist_arquivos WHERE usuario_id = ? AND data = ?' + (itemId ? ' AND item_id = ?' : '') + ' ORDER BY id';
+  return db.prepare(sql).all(...[usuarioId, data].concat(itemId ? [itemId] : []))
+    .map((a) => ({ id: a.id, item_id: a.item_id, mime: a.mime, nome: a.nome_arquivo, hora: paraHoraBrasilia(a.criado_em) }));
+}
+function respostaJson(r, arquivos) {
+  return { id: r.id, item_id: r.item_id, data: r.data, obs: r.obs, hora: paraHoraBrasilia(r.criado_em), arquivos: (arquivos || []).filter((a) => a.item_id === r.item_id) };
+}
+function respostaDoItem(usuarioId, data, itemId) {
+  const r = db.prepare('SELECT * FROM checklist_respostas WHERE usuario_id = ? AND data = ? AND item_id = ?').get(usuarioId, data, itemId);
+  return r ? respostaJson(r, arquivosDe(usuarioId, data, itemId)) : null;
 }
 function detalheDoDia(usuarioId, data) {
-  const respostas = db.prepare('SELECT * FROM checklist_respostas WHERE usuario_id = ? AND data = ?').all(usuarioId, data).map(respostaJson);
+  const arquivos = arquivosDe(usuarioId, data);
+  const respostas = db.prepare('SELECT * FROM checklist_respostas WHERE usuario_id = ? AND data = ?').all(usuarioId, data).map((r) => respostaJson(r, arquivos));
   const dia = db.prepare('SELECT gestor, observacoes, avaliacao, avaliacao_obs, avaliado_em FROM checklist_dias WHERE usuario_id = ? AND data = ?').get(usuarioId, data) || {};
   return { data, respostas, dia };
 }
@@ -205,38 +234,63 @@ lojista.get('/hoje', (req, res) => {
   res.json({ turnos: TURNOS, total: TOTAL, hoje, ...det });
 });
 
-// Envia (ou troca) o comprovante de uma pergunta de hoje. Corpo = o arquivo; ?obs= texto opcional
-lojista.put('/hoje/:item', lerArquivo, (req, res) => {
+// Adiciona um comprovante numa pergunta de hoje (pode ter vários). Corpo = o arquivo; ?obs= texto opcional
+function adicionarArquivo(req, res) {
   const item = ITEM_POR_ID.get(req.params.item);
   if (!item) return res.status(404).json({ erro: 'Pergunta não encontrada.' });
   const mime = String(req.get('content-type') || '').split(';')[0].trim().toLowerCase();
   if (!TIPOS[mime]) return res.status(400).json({ erro: 'Mande uma foto (JPG, PNG, WEBP) ou um PDF.' });
   if (!req.body || !req.body.length) return res.status(400).json({ erro: 'Arquivo vazio.' });
-
   const hoje = hojeBrasilia();
+  const qtd = db.prepare('SELECT COUNT(*) AS n FROM checklist_arquivos WHERE usuario_id = ? AND data = ? AND item_id = ?').get(req.usuarioId, hoje, item.id).n;
+  if (qtd >= MAX_ARQUIVOS) return res.status(400).json({ erro: `Cada pergunta aceita até ${MAX_ARQUIVOS} comprovantes.` });
+
   const nome = `${req.usuarioId}-${hoje}-${item.id}-${crypto.randomBytes(6).toString('hex')}.${TIPOS[mime]}`;
   fs.writeFileSync(path.join(PASTA, nome), req.body);
+  let nomeOriginal = String(req.get('x-nome-arquivo') || '').slice(0, 200);
+  try { nomeOriginal = decodeURIComponent(nomeOriginal).slice(0, 120); } catch (e) { nomeOriginal = ''; }
+  const temObs = req.query.obs !== undefined;
   const obs = String(req.query.obs || '').trim().slice(0, 600) || null;
-  const nomeOriginal = String(req.get('x-nome-arquivo') || '').slice(0, 120) || null;
 
-  const antigo = db.prepare('SELECT arquivo FROM checklist_respostas WHERE usuario_id = ? AND data = ? AND item_id = ?').get(req.usuarioId, hoje, item.id);
+  db.prepare('INSERT INTO checklist_arquivos (usuario_id, data, item_id, arquivo, mime, nome_arquivo) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(req.usuarioId, hoje, item.id, nome, mime, nomeOriginal || null);
   db.prepare(`INSERT INTO checklist_respostas (usuario_id, data, item_id, arquivo, mime, nome_arquivo, obs) VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT (usuario_id, data, item_id) DO UPDATE SET arquivo = excluded.arquivo, mime = excluded.mime,
-      nome_arquivo = excluded.nome_arquivo, obs = excluded.obs, criado_em = datetime('now')`)
-    .run(req.usuarioId, hoje, item.id, nome, mime, nomeOriginal ? decodeURIComponent(nomeOriginal) : null, obs);
-  if (antigo) apagarArquivo(antigo.arquivo);
+    ON CONFLICT (usuario_id, data, item_id) DO UPDATE SET obs = CASE WHEN ? THEN excluded.obs ELSE checklist_respostas.obs END`)
+    .run(req.usuarioId, hoje, item.id, nome, mime, nomeOriginal || null, obs, temObs ? 1 : 0);
+  res.json({ resposta: respostaDoItem(req.usuarioId, hoje, item.id) });
+}
+lojista.post('/hoje/:item', lerArquivo, adicionarArquivo);
+lojista.put('/hoje/:item', lerArquivo, adicionarArquivo); // versão antiga do painel
 
-  const r = db.prepare('SELECT * FROM checklist_respostas WHERE usuario_id = ? AND data = ? AND item_id = ?').get(req.usuarioId, hoje, item.id);
-  res.json({ resposta: respostaJson(r) });
+// Muda só a observação da pergunta
+lojista.patch('/hoje/:item', (req, res) => {
+  const hoje = hojeBrasilia();
+  const obs = String((req.body || {}).obs || '').trim().slice(0, 600) || null;
+  const r = db.prepare('UPDATE checklist_respostas SET obs = ? WHERE usuario_id = ? AND data = ? AND item_id = ?').run(obs, req.usuarioId, hoje, req.params.item);
+  if (!r.changes) return res.status(404).json({ erro: 'Mande pelo menos um comprovante antes.' });
+  res.json({ resposta: respostaDoItem(req.usuarioId, hoje, req.params.item) });
 });
 
-// Só dá pra apagar resposta do próprio dia (o que passou fica registrado)
+// Tira um comprovante. Se era o último, a pergunta volta a ficar pendente. Só no próprio dia.
+lojista.delete('/hoje/:item/arquivo/:id', (req, res) => {
+  const hoje = hojeBrasilia();
+  const a = db.prepare('SELECT id, arquivo FROM checklist_arquivos WHERE id = ? AND usuario_id = ? AND data = ? AND item_id = ?').get(req.params.id, req.usuarioId, hoje, req.params.item);
+  if (!a) return res.status(404).json({ erro: 'Comprovante não encontrado.' });
+  db.prepare('DELETE FROM checklist_arquivos WHERE id = ?').run(a.id);
+  apagarArquivo(a.arquivo);
+  const resta = db.prepare('SELECT COUNT(*) AS n FROM checklist_arquivos WHERE usuario_id = ? AND data = ? AND item_id = ?').get(req.usuarioId, hoje, req.params.item).n;
+  if (!resta) db.prepare('DELETE FROM checklist_respostas WHERE usuario_id = ? AND data = ? AND item_id = ?').run(req.usuarioId, hoje, req.params.item);
+  res.json({ resposta: resta ? respostaDoItem(req.usuarioId, hoje, req.params.item) : null });
+});
+
+// Apaga a resposta inteira da pergunta (todos os comprovantes). Só no próprio dia.
 lojista.delete('/hoje/:item', (req, res) => {
   const hoje = hojeBrasilia();
-  const r = db.prepare('SELECT id, arquivo FROM checklist_respostas WHERE usuario_id = ? AND data = ? AND item_id = ?').get(req.usuarioId, hoje, req.params.item);
-  if (!r) return res.status(404).json({ erro: 'Essa pergunta ainda não tem comprovante hoje.' });
-  db.prepare('DELETE FROM checklist_respostas WHERE id = ?').run(r.id);
-  apagarArquivo(r.arquivo);
+  const arqs = db.prepare('SELECT id, arquivo FROM checklist_arquivos WHERE usuario_id = ? AND data = ? AND item_id = ?').all(req.usuarioId, hoje, req.params.item);
+  const r = db.prepare('DELETE FROM checklist_respostas WHERE usuario_id = ? AND data = ? AND item_id = ?').run(req.usuarioId, hoje, req.params.item);
+  if (!r.changes && !arqs.length) return res.status(404).json({ erro: 'Essa pergunta ainda não tem comprovante hoje.' });
+  db.prepare('DELETE FROM checklist_arquivos WHERE usuario_id = ? AND data = ? AND item_id = ?').run(req.usuarioId, hoje, req.params.item);
+  arqs.forEach((a) => apagarArquivo(a.arquivo));
   res.json({ ok: true });
 });
 
@@ -266,7 +320,7 @@ lojista.get('/dia/:data', (req, res) => {
 });
 
 lojista.get('/arquivo/:id', (req, res) => {
-  const r = db.prepare('SELECT * FROM checklist_respostas WHERE id = ? AND usuario_id = ?').get(req.params.id, req.usuarioId);
+  const r = db.prepare('SELECT * FROM checklist_arquivos WHERE id = ? AND usuario_id = ?').get(req.params.id, req.usuarioId);
   if (!r) return res.status(404).json({ erro: 'Arquivo não encontrado.' });
   enviarArquivo(res, r);
 });
@@ -358,7 +412,7 @@ admin.patch('/loja/:id/dia/:data', (req, res) => {
 });
 
 admin.get('/arquivo/:id', (req, res) => {
-  const r = db.prepare('SELECT * FROM checklist_respostas WHERE id = ?').get(req.params.id);
+  const r = db.prepare('SELECT * FROM checklist_arquivos WHERE id = ?').get(req.params.id);
   if (!r) return res.status(404).json({ erro: 'Arquivo não encontrado.' });
   enviarArquivo(res, r);
 });
@@ -377,7 +431,8 @@ admin.patch('/clientes/:id', (req, res) => {
 
 // Usado ao excluir um cliente
 function apagarDoCliente(usuarioId) {
-  db.prepare('SELECT arquivo FROM checklist_respostas WHERE usuario_id = ?').all(usuarioId).forEach((r) => apagarArquivo(r.arquivo));
+  db.prepare('SELECT arquivo FROM checklist_arquivos WHERE usuario_id = ?').all(usuarioId).forEach((r) => apagarArquivo(r.arquivo));
+  db.prepare('DELETE FROM checklist_arquivos WHERE usuario_id = ?').run(usuarioId);
   db.prepare('DELETE FROM checklist_respostas WHERE usuario_id = ?').run(usuarioId);
   db.prepare('DELETE FROM checklist_dias WHERE usuario_id = ?').run(usuarioId);
 }
