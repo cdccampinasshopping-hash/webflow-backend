@@ -330,12 +330,12 @@ admin.get('/modelo', (req, res) => res.json({ turnos: TURNOS, total: TOTAL, hoje
 // ---------- usuários do checklist (o controle e o admin criam as contas de quem preenche) ----------
 const bcrypt = require('bcryptjs');
 function usuarioChecklistJson(u) {
-  return { id: u.id, nome: u.nome, email: u.email, negocio_nome: u.negocio_nome, checklist_ativo: u.checklist_ativo, checklist_desde: u.checklist_desde, criado_em: u.criado_em, ultimo_acesso: u.ultimo_acesso || null };
+  return { id: u.id, nome: u.nome, email: u.email, negocio_nome: u.negocio_nome, checklist_ativo: u.checklist_ativo, checklist_desde: u.checklist_desde, criado_em: u.criado_em, ultimo_acesso: u.ultimo_acesso || null, cargo: u.cargo || 'checklist' };
 }
 
 admin.get('/usuarios', (req, res) => {
-  const usuarios = db.prepare(`SELECT id, nome, email, negocio_nome, checklist_ativo, checklist_desde, criado_em, ultimo_acesso FROM usuarios
-    WHERE cargo = 'checklist' AND is_admin = 0 ORDER BY COALESCE(negocio_nome, nome)`).all();
+  const usuarios = db.prepare(`SELECT id, nome, email, negocio_nome, checklist_ativo, checklist_desde, criado_em, ultimo_acesso, cargo FROM usuarios
+    WHERE cargo IN (${req.ehAdmin ? "'checklist', 'controle'" : "'checklist'"}) AND is_admin = 0 ORDER BY cargo = 'controle' DESC, COALESCE(negocio_nome, nome)`).all();
   res.json({ usuarios: usuarios.map(usuarioChecklistJson) });
 });
 
@@ -364,9 +364,20 @@ admin.post('/usuarios', (req, res) => {
 
 // Nova senha / ativar ou pausar — só pra contas com cargo "checklist"
 admin.patch('/usuarios/:id', (req, res) => {
-  const u = db.prepare("SELECT id FROM usuarios WHERE id = ? AND cargo = 'checklist' AND is_admin = 0").get(req.params.id);
-  if (!u) return res.status(404).json({ erro: 'Usuário do checklist não encontrado.' });
+  const u = db.prepare("SELECT id, cargo FROM usuarios WHERE id = ? AND cargo IN ('checklist', 'controle') AND is_admin = 0").get(req.params.id);
+  if (!u || (u.cargo === 'controle' && !req.ehAdmin)) return res.status(404).json({ erro: 'Usuário do checklist não encontrado.' });
   const b = req.body || {};
+  // Só o admin troca a função: quem preenche o checklist <-> controle de relatórios
+  if (b.cargo !== undefined) {
+    if (!req.ehAdmin) return res.status(403).json({ erro: 'Só o admin pode mudar a função.' });
+    if (!['checklist', 'controle'].includes(b.cargo)) return res.status(400).json({ erro: 'Função inválida.' });
+    if (b.cargo !== u.cargo) {
+      if (b.cargo === 'controle') db.prepare("UPDATE usuarios SET cargo = 'controle', is_comercial = 0, checklist_ativo = 0 WHERE id = ?").run(u.id);
+      else db.prepare("UPDATE usuarios SET cargo = 'checklist', is_comercial = 0, checklist_ativo = 1, checklist_desde = ? WHERE id = ?").run(hojeBrasilia(), u.id);
+      u.cargo = b.cargo;
+    }
+  }
+  if (b.ativo !== undefined && u.cargo !== 'checklist') return res.status(400).json({ erro: 'Só quem preenche o checklist pode ser pausado.' });
   if (b.senha !== undefined) {
     if (String(b.senha).length < 6) return res.status(400).json({ erro: 'A senha precisa ter pelo menos 6 caracteres.' });
     db.prepare('UPDATE usuarios SET senha_hash = ? WHERE id = ?').run(bcrypt.hashSync(String(b.senha), 10), u.id);
@@ -393,7 +404,7 @@ admin.patch('/usuarios/:id', (req, res) => {
 // Apaga a conta de quem preenche o checklist e tudo que ela mandou (comprovantes, respostas, dias)
 admin.delete('/usuarios/:id', (req, res) => {
   if (!req.ehAdmin) return res.status(403).json({ erro: 'Só o admin pode apagar usuários.' });
-  const u = db.prepare("SELECT id FROM usuarios WHERE id = ? AND cargo = 'checklist' AND is_admin = 0").get(req.params.id);
+  const u = db.prepare("SELECT id FROM usuarios WHERE id = ? AND cargo IN ('checklist', 'controle') AND is_admin = 0").get(req.params.id);
   if (!u) return res.status(404).json({ erro: 'Usuário do checklist não encontrado.' });
   db.transaction((id) => {
     apagarDoCliente(id);
