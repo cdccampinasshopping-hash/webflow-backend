@@ -89,9 +89,16 @@ async function _verificarRespostas(u) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (usuario_id, data, conversa_id) DO UPDATE SET contato = excluded.contato, telefone = excluded.telefone,
       etapa = excluded.etapa, status = excluded.status, ultima_mensagem = excluded.ultima_mensagem`);
+  // Todas as páginas do dia (não só as 100 mais recentes): assim uma conversa resolvida no Orbitta
+  // sai do "sem resposta" no minuto seguinte, mesmo que seja antiga
   for (const [origem, fo] of origens) {
-    const r = await orbitta.chamar('listar_conversas', { start_date: hoje, end_date: hoje, origem, limit: 100, ...fo });
-    (r.conversas || []).forEach((c) => salvar.run(u.id, hoje, c.id, origem, c.contato || null, c.telefone || null, c.etapa || null, c.status || null, c.ultima_mensagem || null));
+    let antes = null;
+    for (let pag = 0; pag < 10; pag++) {
+      const r = await orbitta.chamar('listar_conversas', { start_date: hoje, end_date: hoje, origem, limit: 100, ...fo, ...(antes ? { antes_de: antes } : {}) });
+      (r.conversas || []).forEach((c) => salvar.run(u.id, hoje, c.id, origem, c.contato || null, c.telefone || null, c.etapa || null, c.status || null, c.ultima_mensagem || null));
+      antes = r.proxima_pagina_antes_de;
+      if (!antes || !(r.conversas || []).length) break;
+    }
   }
   // Lê as conversas do dia que mudaram desde a última olhada (todas, não só as últimas horas)
   const mudaram = db.prepare(`SELECT conversa_id, origem, ultima_mensagem FROM orbitta_conversas WHERE usuario_id = ? AND data = ?
@@ -120,7 +127,7 @@ function semResposta(u, minutos) {
   const desde = new Date(Date.now() - 12 * 3600000).toISOString();
   return db.prepare(`SELECT conversa_id, contato, telefone, etapa, vendedor_id, ultimo_em, alerta_em FROM orbitta_conversas
     WHERE usuario_id = ? AND data = ? AND ultimo_de = 'cliente' AND ultimo_em <= ? AND ultimo_em >= ?
-      AND COALESCE(status, '') NOT IN ('resolved', 'closed') AND COALESCE(etapa, '') NOT IN ('Convertido')
+      AND COALESCE(status, '') NOT IN ('resolved', 'closed', 'archived', 'finished') AND COALESCE(etapa, '') NOT IN ('Convertido')
     ORDER BY ultimo_em ASC LIMIT 200`).all(u.id, hojeBrasilia(), limite, desde)
     .map((x) => ({ ...x, vendedor: x.vendedor_id ? ((nomeMembro.get(x.vendedor_id) || {}).nome || null) : null,
       esperando_min: Math.round((Date.now() - new Date(x.ultimo_em).getTime()) / 60000) }));

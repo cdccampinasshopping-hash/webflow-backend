@@ -239,7 +239,7 @@ function situacaoConversas(usuarioId, ini, fim) {
   for (const c of linhas) {
     if (!c.ultimo_de) continue;
     out.lidas++;
-    const fechada = FECHADAS.includes(c.etapa || '') || ['resolved', 'closed'].includes(c.status || '');
+    const fechada = FECHADAS.includes(c.etapa || '') || ['resolved', 'closed', 'archived', 'finished'].includes(c.status || '');
     const desde = c.ultimo_em ? (agora - new Date(c.ultimo_em).getTime()) / 60000 : 0;
     if (c.ultimo_de === 'cliente' && !fechada && desde >= 5) out.nao_respondidos++;
     else if (c.ultimo_de === 'loja' && !fechada && desde >= 120) out.nao_responderam++;
