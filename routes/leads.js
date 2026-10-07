@@ -45,7 +45,7 @@ const MODELOS_PADRAO = [
   { id: 'reativacao', titulo: 'Reativação', texto: 'Oi, {cliente}! Aqui é {vendedor}, da {loja}. Tudo bem? Vi que a gente conversou um tempo atrás e queria saber se ainda posso te ajudar. Tenho condições novas essa semana!' },
   { id: 'sem_resposta', titulo: 'Não respondeu', texto: 'Oi, {cliente}! Aqui é {vendedor}, da {loja}. Te mandei uma mensagem e não sei se chegou. Ainda tem interesse? Posso te ajudar por aqui mesmo.' },
   { id: 'desculpa', titulo: 'Demoramos pra responder', texto: 'Oi, {cliente}! Aqui é {vendedor}, da {loja}. Desculpa a demora pra te responder! Ainda posso te ajudar? Me conta o que você procura.' },
-  { id: 'agendamento', titulo: 'Lembrete de visita', texto: 'Oi, {cliente}! Aqui é {vendedor}, da {loja}. Passando pra lembrar da sua visita. Posso confirmar seu horário?' },
+  { id: 'agendamento', titulo: 'Confirmar visita', texto: 'Oi, {cliente}! Aqui é {vendedor}, da {loja}. Passando pra confirmar sua visita {dia} às {hora}. Posso contar com você?' },
 ];
 function modelosDe(usuarioId) {
   const u = db.prepare('SELECT leads_modelos FROM usuarios WHERE id = ?').get(usuarioId);

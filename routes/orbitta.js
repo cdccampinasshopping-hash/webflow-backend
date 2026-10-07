@@ -367,4 +367,4 @@ function apagarDoCliente(usuarioId) {
   db.prepare('DELETE FROM orbitta_conversas WHERE usuario_id = ?').run(usuarioId);
 }
 
-module.exports = { lojista, admin, iniciarSincronizacaoOrbitta, sincronizarDia, montar, resumirPainel, apagarDoCliente, painelComparado, vendedoresAnterior };
+module.exports = { lojista, admin, iniciarSincronizacaoOrbitta, sincronizarDia, montar, resumirPainel, apagarDoCliente, painelComparado, vendedoresAnterior, vinculoDe, filtros, periodoAnterior };
