@@ -54,4 +54,23 @@ function exigirControle(req, res, next) {
   next();
 }
 
-module.exports = { exigirLogin, exigirAdmin, exigirComercial, exigirControle, registrarAcesso };
+// Olhar outra loja: o painel manda o cabeçalho X-Loja com o id da loja.
+// Só vale pra quem tem um cargo com "Ver outras lojas" que cubra essa loja, e é só leitura
+// (dá pra registrar um WhatsApp enviado e pedir "atualizar agora", mais nada).
+const ESCRITAS_LIBERADAS = [/^\/envios\/?$/, /^\/atualizar\/?$/];
+function verOutraLoja(req, res, next) {
+  const pedido = Number(req.headers['x-loja'] || 0);
+  if (!pedido || pedido === Number(req.usuarioId)) return next();
+  if (!permissoes.lojasVisiveis(req.usuarioId).some((l) => l.id === pedido)) {
+    return res.status(403).json({ erro: 'Seu cargo não dá acesso a essa loja.' });
+  }
+  if (req.method !== 'GET' && !ESCRITAS_LIBERADAS.some((r) => r.test(req.path))) {
+    return res.status(403).json({ erro: 'Você está olhando outra loja: aqui é só pra ver. Volte pra sua loja pra lançar ou mudar.' });
+  }
+  req.quemVe = req.usuarioId;
+  req.usuarioId = pedido;
+  req.vendoOutraLoja = true;
+  next();
+}
+
+module.exports = { verOutraLoja, exigirLogin, exigirAdmin, exigirComercial, exigirControle, registrarAcesso };

@@ -48,12 +48,11 @@ function whatsDe(c) {
   return [...new Set(String(c.whatsapp || '').split(/[,;\n]+/).map((t) => whatsapp.normalizarTelefone(t)).filter(Boolean))].slice(0, 5);
 }
 // Quem recebe aviso no celular: a própria conta da loja + quem tem um cargo com a permissão "alertas"
+// (o cargo escolhe quais lojas; cada pessoa ainda pode silenciar lojas no próprio celular)
+const permissoes = require('../lib/permissoes');
 function destinosPush(u) {
   let tags = [];
-  try {
-    tags = db.prepare(`SELECT DISTINCT uc.usuario_id, c.permissoes FROM usuario_cargos_tag uc JOIN cargos_tag c ON c.id = uc.cargo_id`).all()
-      .filter((r) => { try { return JSON.parse(r.permissoes || '[]').includes('alertas'); } catch (e) { return false; } }).map((r) => r.usuario_id);
-  } catch (e) { /* sem cargos ainda */ }
+  try { tags = permissoes.destinosAlerta(u.id); } catch (e) { /* sem cargos ainda */ }
   return [u.id, ...tags];
 }
 // Texto curto agrupado por vendedor: "João: 2 clientes esperando há 8 min · Sem vendedor: 1 há 12 min"
@@ -368,7 +367,7 @@ async function linhaRede(u, periodo, ini, fim) {
 const lojista = express.Router();
 function lojaDoUsuario(req, res) {
   const u = db.prepare('SELECT id, nome, negocio_nome, email, checklist_ativo, checklist_desde, orbitta_vinculo, orbitta_alerta FROM usuarios WHERE id = ?').get(req.usuarioId);
-  if (!u || !u.checklist_ativo) { res.status(403).json({ erro: 'Não ativado pra sua conta.' }); return null; }
+  if (!u || (!u.checklist_ativo && !req.vendoOutraLoja)) { res.status(403).json({ erro: 'Não ativado pra sua conta.' }); return null; }
   if (!ob.vinculoDe(u)) { res.json({ vinculado: false }); return null; }
   return u;
 }
@@ -455,4 +454,26 @@ admin.post('/resumo/:id', async (req, res) => {
   } catch (e) { res.status(502).json({ erro: e.message }); }
 });
 
-module.exports = { lojista, admin, iniciarExtrasOrbitta, verificarRespostas, semResposta, rodadaAlertas, rodadaResumo, htmlResumo, dadosDoDia, evolucao, agendamentosDe, linhaRede, configDe };
+// ---------------- Outras lojas (cargo com "Ver outras lojas" / "Receber alertas") ----------------
+const lojas = express.Router();
+// Lojas que a pessoa pode olhar, com quantos clientes estão sem resposta agora em cada uma
+lojas.get('/', (req, res) => {
+  const visiveis = permissoes.lojasVisiveis(req.usuarioId);
+  const lista = visiveis.map((l) => {
+    const u = lojaPorId(l.id);
+    let sem = null;
+    try { if (u && ob.vinculoDe(u)) sem = semResposta(u).length; } catch (e) { /* sem Orbitta */ }
+    return { ...l, sem_resposta: sem };
+  });
+  const me = db.prepare('SELECT alerta_lojas_off FROM usuarios WHERE id = ?').get(req.usuarioId) || {};
+  res.json({ lojas: lista, alertas: permissoes.lojasPor(req.usuarioId, 'alertas'), silenciadas: permissoes.lerIds(me.alerta_lojas_off) });
+});
+// Liga/desliga os avisos de uma loja só pra esta pessoa
+lojas.put('/alertas', (req, res) => {
+  const alcance = new Set(permissoes.lojasPor(req.usuarioId, 'alertas').map((l) => l.id));
+  const off = permissoes.lerIds(JSON.stringify((req.body || {}).silenciadas || [])).filter((id) => alcance.has(id));
+  db.prepare('UPDATE usuarios SET alerta_lojas_off = ? WHERE id = ?').run(off.length ? JSON.stringify(off) : null, req.usuarioId);
+  res.json({ silenciadas: off });
+});
+
+module.exports = { lojas, lojista, admin, iniciarExtrasOrbitta, verificarRespostas, semResposta, rodadaAlertas, rodadaResumo, htmlResumo, dadosDoDia, evolucao, agendamentosDe, linhaRede, configDe };

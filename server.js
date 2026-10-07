@@ -23,7 +23,7 @@ const checklist = require('./routes/checklist');
 const leads = require('./routes/leads');
 const orbittaRotas = require('./routes/orbitta');
 const orbittaExtra = require('./routes/orbitta-extra');
-const { exigirLogin, exigirAdmin, exigirControle } = require('./middleware/auth');
+const { exigirLogin, exigirAdmin, exigirControle, verOutraLoja } = require('./middleware/auth');
 const { iniciarAgendamentoBackup } = require('./jobs/backup');
 const { iniciarVerificacaoAssinaturas } = require('./jobs/assinaturas');
 const { iniciarRelatoriosMensais } = require('./jobs/relatorio-mensal');
@@ -158,12 +158,13 @@ app.use('/api/admin/checklist', exigirLogin, exigirControle, checklist.admin);
 app.use('/api/checklist', exigirLogin, checklist.lojista);
 // Controle de leads do dia (quem atendeu, reativações, quem ficou sem resposta)
 app.use('/api/admin/leads', exigirLogin, exigirControle, leads.admin);
-app.use('/api/leads', exigirLogin, leads.lojista);
+app.use('/api/leads', exigirLogin, verOutraLoja, leads.lojista);
 // Dados automáticos do Orbitta (vendedores, novos x reativações)
 app.use('/api/admin/orbitta', exigirLogin, exigirControle, orbittaRotas.admin);
 app.use('/api/admin/orbitta', exigirLogin, exigirControle, orbittaExtra.admin);
-app.use('/api/orbitta', exigirLogin, orbittaRotas.lojista);
-app.use('/api/orbitta', exigirLogin, orbittaExtra.lojista);
+app.use('/api/orbitta', exigirLogin, verOutraLoja, orbittaRotas.lojista);
+app.use('/api/orbitta', exigirLogin, verOutraLoja, orbittaExtra.lojista);
+app.use('/api/lojas', exigirLogin, orbittaExtra.lojas);
 // Notificações no celular (avisos de cliente sem resposta, fechamento do dia)
 app.use('/api/push', exigirLogin, push.rotas);
 app.use('/api/admin', exigirLogin, exigirAdmin, adminRoutes);

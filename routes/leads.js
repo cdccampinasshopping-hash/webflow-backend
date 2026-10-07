@@ -149,7 +149,7 @@ function lerPeriodo(q) {
 const lojista = express.Router();
 lojista.use((req, res, next) => {
   const u = db.prepare('SELECT checklist_ativo FROM usuarios WHERE id = ?').get(req.usuarioId);
-  if (!u || !u.checklist_ativo) return res.status(403).json({ erro: 'O controle de leads não está ativado pra sua conta. Fale com a Flow Solution.' });
+  if (!u || (!u.checklist_ativo && !req.vendoOutraLoja)) return res.status(403).json({ erro: 'O controle de leads não está ativado pra sua conta. Fale com a Flow Solution.' });
   next();
 });
 

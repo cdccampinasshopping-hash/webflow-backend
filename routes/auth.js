@@ -20,7 +20,7 @@ function ehEmailAdmin(email){
 function paraJson(usuario) {
   const { senha_hash, reset_token_hash, reset_token_expira, ...resto } = usuario;
   // Cargos (tags) e o que eles liberam, pro painel saber o que mostrar
-  try { resto.tags = permissoes.cargosDe(usuario.id); resto.permissoes = permissoes.permissoesDeTags(usuario.id); } catch (e) { resto.tags = []; resto.permissoes = []; }
+  try { resto.tags = permissoes.cargosDe(usuario.id); resto.permissoes = permissoes.permissoesDeTags(usuario.id); resto.lojas_visiveis = permissoes.lojasVisiveis(usuario.id); } catch (e) { resto.tags = []; resto.permissoes = []; resto.lojas_visiveis = []; }
   return resto;
 }
 

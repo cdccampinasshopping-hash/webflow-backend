@@ -351,7 +351,7 @@ function lerPeriodo(q, padrao) {
 const lojista = express.Router();
 lojista.get('/', async (req, res) => {
   const u = db.prepare('SELECT id, checklist_ativo, orbitta_vinculo, meta_dia FROM usuarios WHERE id = ?').get(req.usuarioId);
-  if (!u || !u.checklist_ativo) return res.status(403).json({ erro: 'Não ativado pra sua conta.' });
+  if (!u || (!u.checklist_ativo && !req.vendoOutraLoja)) return res.status(403).json({ erro: 'Não ativado pra sua conta.' });
   if (!vinculoDe(u)) return res.json({ vinculado: false, meta: metaDe(u) });
   const { periodo, data } = lerPeriodo(req.query, 'dia');
   const { ini, fim } = intervalo(periodo, data);
@@ -375,7 +375,7 @@ lojista.put('/meta', (req, res) => {
 const ultimaManual = new Map();
 lojista.post('/atualizar', async (req, res) => {
   const u = db.prepare('SELECT id, checklist_ativo, orbitta_vinculo FROM usuarios WHERE id = ?').get(req.usuarioId);
-  if (!u || !u.checklist_ativo || !vinculoDe(u)) return res.status(403).json({ erro: 'Loja não vinculada ao Orbitta.' });
+  if (!u || (!u.checklist_ativo && !req.vendoOutraLoja) || !vinculoDe(u)) return res.status(403).json({ erro: 'Loja não vinculada ao Orbitta.' });
   if (Date.now() - (ultimaManual.get(u.id) || 0) < 120000) return res.status(429).json({ erro: 'Acabou de atualizar. Tente de novo em 2 minutos.' });
   ultimaManual.set(u.id, Date.now());
   for (const c of [cacheComparado, cacheEquipe]) for (const k of [...c.keys()]) if (k.startsWith(u.id + '|')) c.delete(k);
