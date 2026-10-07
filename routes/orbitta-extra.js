@@ -26,11 +26,21 @@ for (const col of ['ultimo_de TEXT', 'ultimo_em TEXT', 'checada_msg TEXT', 'aler
 try { db.exec(`ALTER TABLE usuarios ADD COLUMN orbitta_alerta TEXT`); } catch (e) { /* já existe */ }
 db.exec(`CREATE TABLE IF NOT EXISTS orbitta_resumos (usuario_id INTEGER NOT NULL, data TEXT NOT NULL, enviado_em TEXT DEFAULT (datetime('now')), PRIMARY KEY (usuario_id, data))`);
 
-const PADRAO = { minutos: 30, emails: '', alerta: true, resumo: true, inicio: 8, fim: 22 };
+const PADRAO = { minutos: 5, emails: '', alerta: true, resumo: true, inicio: 8, fim: 22 };
 function configDe(u) {
   let c = {};
   try { c = JSON.parse(u.orbitta_alerta || '{}') || {}; } catch (e) { c = {}; }
   return { ...PADRAO, ...c };
+}
+// Alerta passou de 30 para 5 minutos em todas as lojas que já tinham configuração salva
+if (!db.prepare('SELECT 1 FROM migracoes WHERE nome = ?').get('2026-10-07-alerta-5-min')) {
+  db.transaction(() => {
+    const atualizar = db.prepare('UPDATE usuarios SET orbitta_alerta = ? WHERE id = ?');
+    for (const u of db.prepare(`SELECT id, orbitta_alerta FROM usuarios WHERE orbitta_alerta IS NOT NULL AND orbitta_alerta <> ''`).all()) {
+      atualizar.run(JSON.stringify({ ...configDe(u), minutos: 5 }), u.id);
+    }
+    db.prepare('INSERT INTO migracoes (nome) VALUES (?)').run('2026-10-07-alerta-5-min');
+  })();
 }
 function emailsDe(c) {
   return String(c.emails || '').split(/[,;\s]+/).map((e) => e.trim().toLowerCase()).filter((e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)).slice(0, 5);
@@ -201,8 +211,9 @@ function iniciarExtrasOrbitta() {
   if (!orbitta.configurado()) return;
   let rodando = false;
   const alertas = async () => { if (rodando) return; rodando = true; try { await rodadaAlertas(); } catch (e) { console.error(e.message); } rodando = false; };
+  // Confere a cada 1 min pra o aviso de 5 min sair na hora certa (só lê as conversas que mudaram)
   setTimeout(alertas, 90 * 1000);
-  setInterval(alertas, 5 * 60 * 1000);
+  setInterval(alertas, 60 * 1000);
   setInterval(() => rodadaResumo().catch((e) => console.error('Orbitta resumo:', e.message)), 10 * 60 * 1000);
 }
 
@@ -343,7 +354,7 @@ admin.patch('/alerta/:id', (req, res) => {
   const u = lojaPorId(req.params.id); if (!u) return res.status(404).json({ erro: 'Conta não encontrada.' });
   const b = req.body || {};
   const c = configDe(u);
-  if (b.minutos !== undefined) c.minutos = Math.min(720, Math.max(5, Math.round(Number(b.minutos) || 30)));
+  if (b.minutos !== undefined) c.minutos = Math.min(720, Math.max(5, Math.round(Number(b.minutos) || 5)));
   if (b.emails !== undefined) c.emails = emailsDe({ emails: b.emails }).join(', ');
   if (b.alerta !== undefined) c.alerta = !!b.alerta;
   if (b.resumo !== undefined) c.resumo = !!b.resumo;

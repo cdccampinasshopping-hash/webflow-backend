@@ -1,5 +1,5 @@
 // Integração automática com o Orbitta (só leitura).
-// O admin diz quais agentes/Unidades do Orbitta são de cada loja. A cada 15 minutos o servidor puxa:
+// O admin diz quais agentes/Unidades do Orbitta são de cada loja. A cada 5 minutos o servidor puxa:
 //  - métricas de cada vendedor no dia (conversas atendidas, agendamentos, vendas, transferências, 1ª resposta)
 //  - leads novos x reativações do dia (painel do Orbitta)
 //  - as conversas do dia, com a ficha de cada cliente: quando falou pela 1ª vez (novo ou reativação) e qual vendedor ficou com ele
@@ -161,7 +161,7 @@ function iniciarSincronizacaoOrbitta() {
     if (r && r.erros && r.erros.length) console.error('Orbitta:', r.erros.join(' | '));
   };
   setTimeout(rodar, 60 * 1000);
-  setInterval(rodar, 15 * 60 * 1000);
+  setInterval(rodar, 5 * 60 * 1000);
 }
 
 // ---------------- leitura (o que o painel mostra) ----------------
@@ -215,13 +215,13 @@ function montar(usuarioId, ini, fim) {
   return { loja, vendedores, etapas, sem_vendedor: semVendedor, fichas_pendentes: semFicha, atualizado_em: atualizado, erro, tem_dados: dias.length > 0 };
 }
 
-// Cartões com comparação (período atual x anterior). O Orbitta já devolve os dois. Guarda 10 min.
+// Cartões com comparação (período atual x anterior). O Orbitta já devolve os dois. Guarda 5 min.
 const cacheComparado = new Map();
 async function painelComparado(u, ini, fim) {
   const v = vinculoDe(u); if (!v || !orbitta.configurado()) return null;
   const chave = `${u.id}|${ini}|${fim}`;
   const c = cacheComparado.get(chave);
-  if (c && Date.now() - c.em < 10 * 60 * 1000) return c.dados;
+  if (c && Date.now() - c.em < 5 * 60 * 1000) return c.dados;
   const p = await orbitta.chamar('metricas_painel', { start_date: ini, end_date: fim, ...filtros(v) });
   const soma = (fn) => ['agentes', 'unidades'].reduce((t, lado) => t + (p && p[lado] ? Number(fn(p[lado]) || 0) : 0), 0);
   const par = (fa, fb) => ({ atual: soma(fa), anterior: soma(fb) });
