@@ -378,6 +378,7 @@ admin.patch('/usuarios/:id', (req, res) => {
     if (!b.ativo) db.prepare('UPDATE usuarios SET checklist_ativo = 0 WHERE id = ?').run(u.id);
   }
   if (b.email !== undefined) {
+    if (!req.ehAdmin) return res.status(403).json({ erro: 'Só o admin pode trocar o e-mail de login.' });
     const email = String(b.email || '').trim().toLowerCase().slice(0, 120);
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.status(400).json({ erro: 'E-mail inválido.' });
     if (email === String(process.env.ADMIN_EMAIL || '').toLowerCase().trim()) return res.status(400).json({ erro: 'Esse e-mail é da conta administrativa.' });
@@ -391,6 +392,7 @@ admin.patch('/usuarios/:id', (req, res) => {
 
 // Apaga a conta de quem preenche o checklist e tudo que ela mandou (comprovantes, respostas, dias)
 admin.delete('/usuarios/:id', (req, res) => {
+  if (!req.ehAdmin) return res.status(403).json({ erro: 'Só o admin pode apagar usuários.' });
   const u = db.prepare("SELECT id FROM usuarios WHERE id = ? AND cargo = 'checklist' AND is_admin = 0").get(req.params.id);
   if (!u) return res.status(404).json({ erro: 'Usuário do checklist não encontrado.' });
   db.transaction((id) => {
