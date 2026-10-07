@@ -65,6 +65,11 @@ function vinculoDe(u) {
   try { const v = JSON.parse(u.orbitta_vinculo || 'null'); if (v && ((v.agent_ids || []).length || (v.store_ids || []).length)) return v; } catch (e) { /* inválido */ }
   return null;
 }
+// Cada loja pode usar uma chave própria do Orbitta (outra conta/rede); sem chave escolhida usa a principal
+function comLoja(u, fn) {
+  const v = vinculoDe(u);
+  return orbitta.comChave(v && v.chave ? orbitta.tokenDaChave(v.chave) : null, fn);
+}
 function filtros(v) {
   const f = {};
   if ((v.agent_ids || []).length) f.agent_ids = v.agent_ids;
@@ -115,7 +120,8 @@ function metaDe(u) {
 }
 
 // ---------------- sincronização ----------------
-async function sincronizarDia(u, data) {
+function sincronizarDia(u, data) { return comLoja(u, () => _sincronizarDia(u, data)); }
+async function _sincronizarDia(u, data) {
   const v = vinculoDe(u); if (!v) return;
   const f = filtros(v);
   try {
@@ -274,7 +280,8 @@ function montar(usuarioId, ini, fim) {
 
 // Cartões com comparação (período atual x anterior). O Orbitta já devolve os dois. Guarda 5 min.
 const cacheComparado = new Map();
-async function painelComparado(u, ini, fim) {
+function painelComparado(u, ini, fim) { return comLoja(u, () => _painelComparado(u, ini, fim)); }
+async function _painelComparado(u, ini, fim) {
   const v = vinculoDe(u); if (!v || !orbitta.configurado()) return null;
   const chave = `${u.id}|${ini}|${fim}`;
   const c = cacheComparado.get(chave);
@@ -311,7 +318,8 @@ function periodoAnterior(periodo, ini) {
 
 // Cada vendedor no período anterior: métricas do Orbitta (vêm prontas) + leads que pegou (do que já foi sincronizado)
 const cacheEquipe = new Map();
-async function vendedoresAnterior(u, periodo, ini, fim) {
+function vendedoresAnterior(u, periodo, ini, fim) { return comLoja(u, () => _vendedoresAnterior(u, periodo, ini, fim)); }
+async function _vendedoresAnterior(u, periodo, ini, fim) {
   const v = vinculoDe(u); if (!v || !orbitta.configurado()) return null;
   const ant = periodoAnterior(periodo, ini);
   const out = {};
@@ -388,9 +396,43 @@ const admin = express.Router();
 
 // Agentes e Unidades que a chave do Orbitta enxerga (pra vincular às lojas)
 admin.get('/escopo', async (req, res) => {
-  if (!orbitta.configurado()) return res.json({ configurado: false });
-  try { res.json({ configurado: true, ...(await orbitta.chamar('listar_escopo', {})) }); }
+  const chaveId = Number(req.query.chave) || null;
+  const token = chaveId ? orbitta.tokenDaChave(chaveId) : orbitta.tokenPrincipal();
+  if (!token) return res.json({ configurado: false, chave: chaveId, chaves: listaChaves(), principal: !!orbitta.tokenPrincipal() });
+  try { res.json({ configurado: true, chave: chaveId, chaves: listaChaves(), principal: !!orbitta.tokenPrincipal(), ...(await orbitta.comChave(token, () => orbitta.chamar('listar_escopo', {}))) }); }
   catch (e) { res.status(502).json({ erro: e.message }); }
+});
+
+// Chaves do Orbitta cadastradas pelo painel (uma por conta/rede). O token nunca volta pro navegador.
+function listaChaves() {
+  return db.prepare('SELECT id, nome, organizacao, token, criado_em FROM orbitta_chaves ORDER BY id').all()
+    .map((c) => ({ id: c.id, nome: c.nome, organizacao: c.organizacao, final: String(c.token).slice(-4), criado_em: c.criado_em,
+      lojas: db.prepare(`SELECT COUNT(*) AS n FROM usuarios WHERE json_extract(orbitta_vinculo, '$.chave') = ?`).get(c.id).n }));
+}
+admin.get('/chaves', (req, res) => res.json({ chaves: listaChaves(), principal: !!orbitta.tokenPrincipal() }));
+admin.post('/chaves', async (req, res) => {
+  if (!req.ehAdmin) return res.status(403).json({ erro: 'Só o admin pode cadastrar chaves do Orbitta.' });
+  const b = req.body || {};
+  const token = String(b.token || '').trim();
+  const nome = String(b.nome || '').trim().slice(0, 40) || 'Orbitta';
+  if (!/^orb_[\w-]{16,200}$/.test(token)) return res.status(400).json({ erro: 'Cole a chave pessoal do Orbitta (começa com orb_).' });
+  if (db.prepare('SELECT 1 FROM orbitta_chaves WHERE token = ?').get(token)) return res.status(400).json({ erro: 'Essa chave já está cadastrada.' });
+  // Testa a chave antes de guardar
+  let escopo;
+  try { escopo = await orbitta.comChave(token, () => orbitta.chamar('listar_escopo', {})); }
+  catch (e) { return res.status(400).json({ erro: 'O Orbitta não aceitou essa chave: ' + e.message }); }
+  const org = (escopo && escopo.organizacao && escopo.organizacao.nome) || null;
+  const r = db.prepare('INSERT INTO orbitta_chaves (nome, token, organizacao) VALUES (?, ?, ?)').run(nome, token, org);
+  res.status(201).json({ chave: { id: Number(r.lastInsertRowid), nome, organizacao: org, final: token.slice(-4) }, chaves: listaChaves() });
+});
+admin.delete('/chaves/:id', (req, res) => {
+  if (!req.ehAdmin) return res.status(403).json({ erro: 'Só o admin pode apagar chaves do Orbitta.' });
+  const c = db.prepare('SELECT id FROM orbitta_chaves WHERE id = ?').get(req.params.id);
+  if (!c) return res.status(404).json({ erro: 'Chave não encontrada.' });
+  const n = db.prepare(`SELECT COUNT(*) AS n FROM usuarios WHERE json_extract(orbitta_vinculo, '$.chave') = ?`).get(c.id).n;
+  if (n) return res.status(400).json({ erro: `Essa chave ainda está em ${n} loja(s). Troque a chave delas antes de apagar.` });
+  db.prepare('DELETE FROM orbitta_chaves WHERE id = ?').run(c.id);
+  res.json({ chaves: listaChaves() });
 });
 
 // Vincula uma conta (quem preenche ou lojista) a agentes/Unidades do Orbitta. Só o admin.
@@ -401,6 +443,11 @@ admin.patch('/vinculo/:id', (req, res) => {
   const limpa = (a) => (Array.isArray(a) ? a : []).map((x) => String(x).trim()).filter((x) => /^[0-9a-f-]{8,64}$/i.test(x)).slice(0, 30);
   const b = req.body || {};
   const v = { agent_ids: limpa(b.agent_ids), store_ids: limpa(b.store_ids) };
+  const chaveId = Number(b.chave) || null;
+  if (chaveId) {
+    if (!db.prepare('SELECT 1 FROM orbitta_chaves WHERE id = ?').get(chaveId)) return res.status(400).json({ erro: 'Chave do Orbitta não encontrada.' });
+    v.chave = chaveId;
+  }
   const valor = v.agent_ids.length || v.store_ids.length ? JSON.stringify(v) : null;
   db.prepare('UPDATE usuarios SET orbitta_vinculo = ? WHERE id = ?').run(valor, u.id);
   if (valor) sincronizarDia({ id: u.id, orbitta_vinculo: valor }, hojeBrasilia()).catch((e) => console.error('Orbitta:', e.message));
@@ -439,4 +486,4 @@ function apagarDoCliente(usuarioId) {
   db.prepare('DELETE FROM orbitta_respostas WHERE usuario_id = ?').run(usuarioId);
 }
 
-module.exports = { registrarRespostas, temposResposta, metaDe, lojista, admin, iniciarSincronizacaoOrbitta, sincronizarDia, montar, resumirPainel, apagarDoCliente, painelComparado, vendedoresAnterior, vinculoDe, filtros, periodoAnterior };
+module.exports = { comLoja, registrarRespostas, temposResposta, metaDe, lojista, admin, iniciarSincronizacaoOrbitta, sincronizarDia, montar, resumirPainel, apagarDoCliente, painelComparado, vendedoresAnterior, vinculoDe, filtros, periodoAnterior };

@@ -77,7 +77,8 @@ const nomeMembro = db.prepare('SELECT nome FROM orbitta_membros WHERE id = ?');
 
 // ---------------- 1) Alerta de lead esquecido ----------------
 const LER_POR_RODADA = 40;
-async function verificarRespostas(u) {
+function verificarRespostas(u) { return ob.comLoja(u, () => _verificarRespostas(u)); }
+async function _verificarRespostas(u) {
   const v = ob.vinculoDe(u); if (!v) return;
   const hoje = hojeBrasilia();
   const origens = [];
@@ -390,7 +391,8 @@ function iniciarExtrasOrbitta() {
 
 // ---------------- 4) Visitas pra confirmar ----------------
 const cacheAg = new Map();
-async function agendamentosDe(u, dia) {
+function agendamentosDe(u, dia) { return ob.comLoja(u, () => _agendamentosDe(u, dia)); }
+async function _agendamentosDe(u, dia) {
   const v = ob.vinculoDe(u); if (!v) return [];
   const chave = `${u.id}|${dia}`;
   const c = cacheAg.get(chave);
@@ -416,7 +418,8 @@ async function agendamentosDe(u, dia) {
 
 // ---------------- 5) Evolução 30 dias ----------------
 const cacheEvo = new Map();
-async function evolucao(u, dias) {
+function evolucao(u, dias) { return ob.comLoja(u, () => _evolucao(u, dias)); }
+async function _evolucao(u, dias) {
   const v = ob.vinculoDe(u); if (!v) return null;
   const fim = hojeBrasilia(), ini = somaDias(fim, -(dias - 1));
   const chave = `${u.id}|${ini}`;
