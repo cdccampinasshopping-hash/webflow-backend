@@ -38,6 +38,12 @@ db.exec(`
   )
 `);
 
+// Nome de cada vendedor do Orbitta (as métricas do dia só trazem quem teve movimento naquele dia)
+db.exec(`CREATE TABLE IF NOT EXISTS orbitta_membros (id TEXT PRIMARY KEY, nome TEXT NOT NULL, atualizado_em TEXT DEFAULT (datetime('now')))`);
+const salvarMembro = db.prepare(`INSERT INTO orbitta_membros (id, nome, atualizado_em) VALUES (?, ?, datetime('now'))
+  ON CONFLICT (id) DO UPDATE SET nome = excluded.nome, atualizado_em = excluded.atualizado_em`);
+function guardarNomes(lista) { (lista || []).forEach((m) => { if (m && m.membro_id && m.nome) salvarMembro.run(m.membro_id, m.nome); }); }
+
 const FICHAS_POR_RODADA = 120;
 const espera = (ms) => new Promise((ok) => setTimeout(ok, ms));
 const inicioDoDiaUtc = (d) => d + 'T03:00:00Z'; // 00:00 em Brasília
@@ -65,6 +71,7 @@ async function sincronizarDia(u, data) {
     db.prepare(`INSERT INTO orbitta_dia (usuario_id, data, equipe, painel, erro, atualizado_em) VALUES (?, ?, ?, ?, NULL, datetime('now'))
       ON CONFLICT (usuario_id, data) DO UPDATE SET equipe = excluded.equipe, painel = excluded.painel, erro = NULL, atualizado_em = excluded.atualizado_em`)
       .run(u.id, data, JSON.stringify(equipe.membros || []), JSON.stringify(resumirPainel(painel, data)));
+    guardarNomes(equipe.membros); guardarNomes(equipe.membros_periodo_anterior);
 
     // Conversas do dia (Unidades e/ou agentes), página por página
     const origens = [];
@@ -98,6 +105,12 @@ async function sincronizarDia(u, data) {
         atualizar.run(null, null, u.id, data, p.conversa_id);
       }
       await espera(120);
+    }
+    const semNome = db.prepare(`SELECT 1 FROM orbitta_conversas c WHERE c.usuario_id = ? AND c.data = ? AND c.vendedor_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM orbitta_membros m WHERE m.id = c.vendedor_id) LIMIT 1`).get(u.id, data);
+    if (semNome) {
+      try { const r = await orbitta.chamar('metricas_equipe', { start_date: somaDias(data, -90), end_date: data, ...f }); guardarNomes(r.membros); guardarNomes(r.membros_periodo_anterior); }
+      catch (e) { /* fica sem nome por enquanto */ }
     }
   } catch (e) {
     db.prepare(`INSERT INTO orbitta_dia (usuario_id, data, erro, atualizado_em) VALUES (?, ?, ?, datetime('now'))
@@ -157,8 +170,10 @@ function montar(usuarioId, ini, fim) {
   const conv = db.prepare('SELECT data, etapa, primeira_mensagem, vendedor_id, ficha_em FROM orbitta_conversas WHERE usuario_id = ? AND data >= ? AND data <= ?').all(usuarioId, ini, fim);
   const loja = { conversas: 0, novos: 0, reativacoes: 0, agendamentos: 0, vendas: 0, vendas_valor: 0 };
   const vend = new Map();
+  const nomeDe = db.prepare('SELECT nome FROM orbitta_membros WHERE id = ?');
   const pegaV = (id, nome) => {
-    if (!vend.has(id)) vend.set(id, { id, nome: nome || 'Vendedor', conversas: 0, agendamentos: 0, vendas: 0, valor_vendido: 0, transferencias: 0, mensagens: 0, _resp: 0, _respN: 0, pegos: 0, novos: 0, reativacoes: 0 });
+    if (!vend.has(id)) { const g = !nome && id ? nomeDe.get(id) : null; nome = nome || (g && g.nome) || null; }
+    if (!vend.has(id)) vend.set(id, { id, nome: nome || 'Vendedor ' + String(id || '').slice(0, 4), conversas: 0, agendamentos: 0, vendas: 0, valor_vendido: 0, transferencias: 0, mensagens: 0, _resp: 0, _respN: 0, pegos: 0, novos: 0, reativacoes: 0 });
     const v = vend.get(id); if (nome) v.nome = nome; return v;
   };
   let atualizado = null, erro = null;
@@ -249,6 +264,7 @@ async function vendedoresAnterior(u, periodo, ini, fim) {
     if (!eq || Date.now() - eq.em > 10 * 60 * 1000) {
       const r = await orbitta.chamar('metricas_equipe', { start_date: ini, end_date: fim, ...filtros(v) });
       eq = { em: Date.now(), membros: r.membros_periodo_anterior || [] };
+      guardarNomes(r.membros); guardarNomes(r.membros_periodo_anterior);
       cacheEquipe.set(chave, eq);
       if (cacheEquipe.size > 500) cacheEquipe.delete(cacheEquipe.keys().next().value);
     }
