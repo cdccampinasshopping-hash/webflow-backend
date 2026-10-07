@@ -76,7 +76,8 @@ function lojasVinculadas() {
 const nomeMembro = db.prepare('SELECT nome FROM orbitta_membros WHERE id = ?');
 
 // ---------------- 1) Alerta de lead esquecido ----------------
-const LER_POR_RODADA = 40;
+// Lê todas as conversas do dia que mudaram (até 60 por minuto por loja), pra medir o tempo de resposta de todas
+const LER_POR_RODADA = 60;
 function verificarRespostas(u) { return ob.comLoja(u, () => _verificarRespostas(u)); }
 async function _verificarRespostas(u) {
   const v = ob.vinculoDe(u); if (!v) return;
@@ -92,14 +93,14 @@ async function _verificarRespostas(u) {
     const r = await orbitta.chamar('listar_conversas', { start_date: hoje, end_date: hoje, origem, limit: 100, ...fo });
     (r.conversas || []).forEach((c) => salvar.run(u.id, hoje, c.id, origem, c.contato || null, c.telefone || null, c.etapa || null, c.status || null, c.ultima_mensagem || null));
   }
-  // Lê só as conversas que mudaram desde a última olhada (das últimas 12 horas)
-  const desde = new Date(Date.now() - 12 * 3600000).toISOString();
+  // Lê as conversas do dia que mudaram desde a última olhada (todas, não só as últimas horas)
   const mudaram = db.prepare(`SELECT conversa_id, origem, ultima_mensagem FROM orbitta_conversas WHERE usuario_id = ? AND data = ?
-    AND ultima_mensagem >= ? AND (checada_msg IS NULL OR checada_msg <> ultima_mensagem) ORDER BY ultima_mensagem DESC LIMIT ?`).all(u.id, hoje, desde, LER_POR_RODADA);
+    AND (checada_msg IS NULL OR checada_msg <> ultima_mensagem) ORDER BY ultima_mensagem DESC LIMIT ?`).all(u.id, hoje, LER_POR_RODADA);
   const marcar = db.prepare('UPDATE orbitta_conversas SET ultimo_de = ?, ultimo_em = ?, checada_msg = ? WHERE usuario_id = ? AND data = ? AND conversa_id = ?');
   for (const c of mudaram) {
     try {
-      const r = await orbitta.chamar('ler_conversa', { id: c.conversa_id, origem: c.origem || 'agente', limit: 8 });
+      // 40 mensagens: pega as idas e vindas do dia inteiro, não só o fim da conversa
+      const r = await orbitta.chamar('ler_conversa', { id: c.conversa_id, origem: c.origem || 'agente', limit: 40 });
       const msgs = r.mensagens || [];
       try { ob.registrarRespostas(u.id, c.conversa_id, msgs); } catch (e) { /* não trava o alerta */ }
       const ult = msgs[msgs.length - 1];

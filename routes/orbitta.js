@@ -225,6 +225,28 @@ function iniciarSincronizacaoOrbitta() {
   setInterval(rodar, 5 * 60 * 1000);
 }
 
+// Quem ficou sem resposta e quem não respondeu, contado direto das conversas do Orbitta
+// (substitui o lançamento à mão nas lojas ligadas ao Orbitta).
+//  nao_respondidos: o cliente mandou a última mensagem há mais de 5 min e ninguém respondeu
+//  nao_responderam: a loja mandou a última mensagem há mais de 2 h e o cliente sumiu (sem venda)
+const FECHADAS = ['Convertido', 'Vendido', 'Venda', 'Ganho', 'Fechado'];
+function situacaoConversas(usuarioId, ini, fim) {
+  const linhas = db.prepare(`SELECT c.conversa_id, c.etapa, c.status, c.ultimo_de, c.ultimo_em FROM orbitta_conversas c
+    WHERE c.usuario_id = ? AND c.data >= ? AND c.data <= ?
+      AND c.data = (SELECT MAX(x.data) FROM orbitta_conversas x WHERE x.usuario_id = c.usuario_id AND x.conversa_id = c.conversa_id AND x.data <= ?)`).all(usuarioId, ini, fim, fim);
+  const agora = Date.now();
+  const out = { total: linhas.length, lidas: 0, nao_respondidos: 0, nao_responderam: 0 };
+  for (const c of linhas) {
+    if (!c.ultimo_de) continue;
+    out.lidas++;
+    const fechada = FECHADAS.includes(c.etapa || '') || ['resolved', 'closed'].includes(c.status || '');
+    const desde = c.ultimo_em ? (agora - new Date(c.ultimo_em).getTime()) / 60000 : 0;
+    if (c.ultimo_de === 'cliente' && !fechada && desde >= 5) out.nao_respondidos++;
+    else if (c.ultimo_de === 'loja' && !fechada && desde >= 120) out.nao_responderam++;
+  }
+  return out;
+}
+
 // ---------------- leitura (o que o painel mostra) ----------------
 function montar(usuarioId, ini, fim) {
   const dias = db.prepare('SELECT * FROM orbitta_dia WHERE usuario_id = ? AND data >= ? AND data <= ?').all(usuarioId, ini, fim);
@@ -275,7 +297,8 @@ function montar(usuarioId, ini, fim) {
   loja.vendas_valor = Math.round(loja.vendas_valor * 100) / 100;
   const tr = temposResposta(usuarioId, ini, fim);
   for (const v of vendedores) { const t = tr.vendedores[v.id]; v.resposta_seg = t ? t.media_seg : null; v.respostas = t ? t.respostas : 0; }
-  return { loja, vendedores, etapas, resposta: { media_seg: tr.media_seg, respostas: tr.respostas }, sem_vendedor: semVendedor, fichas_pendentes: semFicha, atualizado_em: atualizado, erro, tem_dados: dias.length > 0 };
+  return { loja, vendedores, etapas, resposta: { media_seg: tr.media_seg, respostas: tr.respostas }, sem_vendedor: semVendedor, fichas_pendentes: semFicha,
+    situacao: situacaoConversas(usuarioId, ini, fim), atualizado_em: atualizado, erro, tem_dados: dias.length > 0 };
 }
 
 // Cartões com comparação (período atual x anterior). O Orbitta já devolve os dois. Guarda 5 min.
@@ -480,6 +503,46 @@ admin.get('/loja/:id', async (req, res) => {
   const { periodo, data, ate } = lerPeriodo(req.query, 'dia');
   const { ini, fim } = intervalo(periodo, data, ate);
   res.json({ vinculado: true, loja: { id: u.id, nome: u.nome, negocio_nome: u.negocio_nome }, periodo, ini, fim, hoje: hojeBrasilia(), ...montar(u.id, ini, fim), comparado: await comComparado(u, ini, fim), anterior: await vendedoresAnterior(u, periodo, ini, fim).catch(() => null) });
+});
+
+// ---------------- conferência: Orbitta agora x o que o painel tem guardado ----------------
+admin.get('/lojas-vinculadas', (req, res) => {
+  const lojas = db.prepare(`SELECT id, nome, negocio_nome, orbitta_vinculo FROM usuarios WHERE is_admin = 0 AND orbitta_vinculo IS NOT NULL AND orbitta_vinculo <> ''
+    ORDER BY COALESCE(negocio_nome, nome)`).all().filter((u) => vinculoDe(u)).map((u) => ({ id: u.id, nome: u.negocio_nome || u.nome }));
+  res.json({ lojas });
+});
+admin.get('/conferencia/:id', async (req, res) => {
+  const u = db.prepare('SELECT id, nome, negocio_nome, orbitta_vinculo FROM usuarios WHERE id = ?').get(req.params.id);
+  if (!u) return res.status(404).json({ erro: 'Loja não encontrada.' });
+  if (!vinculoDe(u)) return res.json({ vinculado: false, loja: { id: u.id, nome: u.negocio_nome || u.nome } });
+  const data = dataValida(req.query.data) ? req.query.data : hojeBrasilia();
+  const m = montar(u.id, data, data);
+  cacheComparado.delete(`${u.id}|${data}|${data}`);
+  let orb = null, erroOrb = null;
+  try { orb = await painelComparado(u, data, data); } catch (e) { erroOrb = e.message; }
+  const conv = db.prepare(`SELECT COUNT(*) AS total, SUM(vendedor_id IS NOT NULL) AS com_vendedor, SUM(ficha_em IS NULL) AS sem_ficha,
+      SUM(ultimo_de IS NOT NULL) AS lidas FROM orbitta_conversas WHERE usuario_id = ? AND data = ?`).get(u.id, data);
+  const dia = db.prepare('SELECT atualizado_em, erro FROM orbitta_dia WHERE usuario_id = ? AND data = ?').get(u.id, data) || {};
+  const g = (k) => (orb && orb[k] ? orb[k].atual : null);
+  res.json({ vinculado: true, loja: { id: u.id, nome: u.negocio_nome || u.nome }, data, hoje: hojeBrasilia(), erro_orbitta: erroOrb,
+    sincronizado_em: dia.atualizado_em || null, erro_sincronizacao: dia.erro || null,
+    linhas: [
+      { id: 'leads', nome: 'Leads atendidos', orbitta: g('leads_atendidos'), painel: m.loja.conversas },
+      { id: 'novos', nome: 'Leads novos', orbitta: g('leads_novos'), painel: m.loja.novos },
+      { id: 'reativacoes', nome: 'Reativações', orbitta: g('leads_recorrentes'), painel: m.loja.reativacoes },
+      { id: 'agend', nome: 'Agendamentos feitos', orbitta: g('agend_detectados'), painel: m.loja.agendamentos },
+      { id: 'vendas', nome: 'Vendas', orbitta: g('vendas'), painel: m.loja.vendas },
+      { id: 'valor', nome: 'Valor vendido', orbitta: g('valor_vendido'), painel: m.loja.vendas_valor, dinheiro: true },
+    ],
+    internos: { conversas: conv.total || 0, com_vendedor: conv.com_vendedor || 0, sem_ficha: conv.sem_ficha || 0, lidas: conv.lidas || 0,
+      respostas_medidas: m.resposta.respostas, resposta_media_seg: m.resposta.media_seg, situacao: m.situacao } });
+});
+admin.post('/conferencia/:id/sincronizar', async (req, res) => {
+  const u = db.prepare('SELECT id, orbitta_vinculo FROM usuarios WHERE id = ?').get(req.params.id);
+  if (!u || !vinculoDe(u)) return res.status(400).json({ erro: 'Loja não vinculada ao Orbitta.' });
+  const data = dataValida((req.body || {}).data) ? req.body.data : hojeBrasilia();
+  for (const c of [cacheComparado, cacheEquipe]) for (const k of [...c.keys()]) if (k.startsWith(u.id + '|')) c.delete(k);
+  try { await sincronizarDia(u, data); res.json({ ok: true }); } catch (e) { res.status(502).json({ erro: e.message }); }
 });
 
 function apagarDoCliente(usuarioId) {
