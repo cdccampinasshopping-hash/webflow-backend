@@ -19,6 +19,7 @@ const cardapio3d = require('./routes/cardapio3d');
 const agenda = require('./routes/agenda');
 const notas = require('./routes/notas');
 const checklist = require('./routes/checklist');
+const leads = require('./routes/leads');
 const { exigirLogin, exigirAdmin, exigirControle } = require('./middleware/auth');
 const { iniciarAgendamentoBackup } = require('./jobs/backup');
 const { iniciarVerificacaoAssinaturas } = require('./jobs/assinaturas');
@@ -152,6 +153,9 @@ app.use('/api/admin/cardapio3d', exigirLogin, exigirAdmin, cardapio3d.rotasGesta
 // Checklist diário do gerente/líder (comprovantes) e relatórios pro admin
 app.use('/api/admin/checklist', exigirLogin, exigirControle, checklist.admin);
 app.use('/api/checklist', exigirLogin, checklist.lojista);
+// Controle de leads do dia (quem atendeu, reativações, quem ficou sem resposta)
+app.use('/api/admin/leads', exigirLogin, exigirControle, leads.admin);
+app.use('/api/leads', exigirLogin, leads.lojista);
 app.use('/api/admin', exigirLogin, exigirAdmin, adminRoutes);
 app.use('/api/cardapio3d', exigirLogin, cardapio3d.exigirPremium, cardapio3d.rotasGestao((req) => req.usuarioId));
 app.use('/api/publico/cardapio3d', cardapio3d.publico);
