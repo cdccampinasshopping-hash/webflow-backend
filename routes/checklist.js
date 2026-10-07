@@ -377,8 +377,29 @@ admin.patch('/usuarios/:id', (req, res) => {
     if (b.ativo && !atual.checklist_ativo) db.prepare('UPDATE usuarios SET checklist_ativo = 1, checklist_desde = ? WHERE id = ?').run(hojeBrasilia(), u.id);
     if (!b.ativo) db.prepare('UPDATE usuarios SET checklist_ativo = 0 WHERE id = ?').run(u.id);
   }
+  if (b.email !== undefined) {
+    const email = String(b.email || '').trim().toLowerCase().slice(0, 120);
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.status(400).json({ erro: 'E-mail inválido.' });
+    if (email === String(process.env.ADMIN_EMAIL || '').toLowerCase().trim()) return res.status(400).json({ erro: 'Esse e-mail é da conta administrativa.' });
+    const outro = db.prepare('SELECT id FROM usuarios WHERE email = ? AND id <> ?').get(email, u.id);
+    if (outro) return res.status(409).json({ erro: 'Já existe uma conta com esse e-mail.' });
+    db.prepare('UPDATE usuarios SET email = ? WHERE id = ?').run(email, u.id);
+  }
   if (b.negocio_nome !== undefined && String(b.negocio_nome).trim()) db.prepare('UPDATE usuarios SET negocio_nome = ? WHERE id = ?').run(String(b.negocio_nome).trim().slice(0, 80), u.id);
   res.json({ usuario: usuarioChecklistJson(db.prepare('SELECT * FROM usuarios WHERE id = ?').get(u.id)) });
+});
+
+// Apaga a conta de quem preenche o checklist e tudo que ela mandou (comprovantes, respostas, dias)
+admin.delete('/usuarios/:id', (req, res) => {
+  const u = db.prepare("SELECT id FROM usuarios WHERE id = ? AND cargo = 'checklist' AND is_admin = 0").get(req.params.id);
+  if (!u) return res.status(404).json({ erro: 'Usuário do checklist não encontrado.' });
+  db.transaction((id) => {
+    apagarDoCliente(id);
+    db.prepare('DELETE FROM dados WHERE usuario_id = ?').run(id);
+    db.prepare('DELETE FROM suporte WHERE usuario_id = ?').run(id);
+    db.prepare('DELETE FROM usuarios WHERE id = ?').run(id);
+  })(u.id);
+  res.json({ ok: true, id: u.id });
 });
 
 // Relatório de todas as lojas com checklist: ?periodo=dia|semana|mes&data=YYYY-MM-DD
