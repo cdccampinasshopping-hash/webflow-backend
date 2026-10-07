@@ -3,7 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const db = require('../db');
-const { exigirLogin } = require('../middleware/auth');
+const { exigirLogin, registrarAcesso } = require('../middleware/auth');
 const { enviarEmail } = require('../email');
 
 const router = express.Router();
@@ -91,9 +91,13 @@ router.post('/login', (req, res) => {
     usuario.is_admin = deveSerAdmin;
   }
 
+  db.prepare("UPDATE usuarios SET ultimo_acesso = datetime('now') WHERE id = ?").run(usuario.id);
   const token = gerarToken(usuario.id);
   res.json({ token, usuario: paraJson(usuario) });
 });
+
+// Sinal de "estou online" enviado pelo painel de tempos em tempos (o exigirLogin já grava o horário)
+router.post('/ping', exigirLogin, (req, res) => res.json({ ok: true }));
 
 router.get('/me', exigirLogin, (req, res) => {
   const usuario = db.prepare('SELECT * FROM usuarios WHERE id = ?').get(req.usuarioId);

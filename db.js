@@ -307,6 +307,10 @@ try { db.exec(`ALTER TABLE usuarios ADD COLUMN gcal_token TEXT`); } catch (e) { 
 try { db.exec(`ALTER TABLE usuarios ADD COLUMN gcal_email TEXT`); } catch (e) { /* já existe */ }
 try { db.exec(`ALTER TABLE usuarios ADD COLUMN agenda_ics_token TEXT`); } catch (e) { /* já existe */ }
 
+// Última vez que a pessoa esteve online no painel (UTC, formato datetime do SQLite).
+// Atualizado no login e a cada chamada logada (no máximo 1x por minuto).
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN ultimo_acesso TEXT`); } catch (e) { /* já existe */ }
+
 // Cada horário marcado. data = 'YYYY-MM-DD' e hora = 'HH:MM' no horário de Brasília.
 // zap_status / gcal_status: o que o robô conseguiu fazer (enviado, manual, erro / criado, sem_google, erro)
 db.exec(`

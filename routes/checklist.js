@@ -206,7 +206,7 @@ function resumo(lojas, ini, fim) {
 }
 
 function lojasAtivas() {
-  return db.prepare(`SELECT id, nome, email, negocio_nome, checklist_desde FROM usuarios
+  return db.prepare(`SELECT id, nome, email, negocio_nome, checklist_desde, ultimo_acesso FROM usuarios
     WHERE checklist_ativo = 1 AND is_admin = 0 AND cargo IN ('lojista', 'checklist') ORDER BY COALESCE(negocio_nome, nome)`).all();
 }
 
@@ -330,11 +330,11 @@ admin.get('/modelo', (req, res) => res.json({ turnos: TURNOS, total: TOTAL, hoje
 // ---------- usuários do checklist (o controle e o admin criam as contas de quem preenche) ----------
 const bcrypt = require('bcryptjs');
 function usuarioChecklistJson(u) {
-  return { id: u.id, nome: u.nome, email: u.email, negocio_nome: u.negocio_nome, checklist_ativo: u.checklist_ativo, checklist_desde: u.checklist_desde, criado_em: u.criado_em };
+  return { id: u.id, nome: u.nome, email: u.email, negocio_nome: u.negocio_nome, checklist_ativo: u.checklist_ativo, checklist_desde: u.checklist_desde, criado_em: u.criado_em, ultimo_acesso: u.ultimo_acesso || null };
 }
 
 admin.get('/usuarios', (req, res) => {
-  const usuarios = db.prepare(`SELECT id, nome, email, negocio_nome, checklist_ativo, checklist_desde, criado_em FROM usuarios
+  const usuarios = db.prepare(`SELECT id, nome, email, negocio_nome, checklist_ativo, checklist_desde, criado_em, ultimo_acesso FROM usuarios
     WHERE cargo = 'checklist' AND is_admin = 0 ORDER BY COALESCE(negocio_nome, nome)`).all();
   res.json({ usuarios: usuarios.map(usuarioChecklistJson) });
 });

@@ -1,6 +1,14 @@
 const jwt = require('jsonwebtoken');
 const db = require('../db');
 
+// Marca a pessoa como online agora (grava no máximo 1x por minuto pra não pesar o banco)
+function registrarAcesso(usuarioId) {
+  try {
+    db.prepare(`UPDATE usuarios SET ultimo_acesso = datetime('now')
+      WHERE id = ? AND (ultimo_acesso IS NULL OR ultimo_acesso < datetime('now', '-60 seconds'))`).run(usuarioId);
+  } catch (e) { /* não trava a requisição por causa disso */ }
+}
+
 function exigirLogin(req, res, next) {
   const cabecalho = req.headers.authorization || '';
   const token = cabecalho.startsWith('Bearer ') ? cabecalho.slice(7) : null;
@@ -12,6 +20,7 @@ function exigirLogin(req, res, next) {
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
     req.usuarioId = payload.usuarioId;
+    registrarAcesso(req.usuarioId);
     next();
   } catch (e) {
     return res.status(401).json({ erro: 'Sessão inválida ou expirada. Faça login novamente.' });
@@ -44,4 +53,4 @@ function exigirControle(req, res, next) {
   next();
 }
 
-module.exports = { exigirLogin, exigirAdmin, exigirComercial, exigirControle };
+module.exports = { exigirLogin, exigirAdmin, exigirComercial, exigirControle, registrarAcesso };
