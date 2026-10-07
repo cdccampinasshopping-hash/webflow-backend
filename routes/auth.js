@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const db = require('../db');
+const permissoes = require('../lib/permissoes');
 const { exigirLogin, registrarAcesso } = require('../middleware/auth');
 const { enviarEmail } = require('../email');
 
@@ -18,6 +19,8 @@ function ehEmailAdmin(email){
 
 function paraJson(usuario) {
   const { senha_hash, reset_token_hash, reset_token_expira, ...resto } = usuario;
+  // Cargos (tags) e o que eles liberam, pro painel saber o que mostrar
+  try { resto.tags = permissoes.cargosDe(usuario.id); resto.permissoes = permissoes.permissoesDeTags(usuario.id); } catch (e) { resto.tags = []; resto.permissoes = []; }
   return resto;
 }
 

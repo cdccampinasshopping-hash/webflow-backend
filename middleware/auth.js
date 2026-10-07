@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const db = require('../db');
+const permissoes = require('../lib/permissoes');
 
 // Marca a pessoa como online agora (grava no máximo 1x por minuto pra não pesar o banco)
 function registrarAcesso(usuarioId) {
@@ -43,10 +44,10 @@ function exigirComercial(req, res, next) {
   next();
 }
 
-// Relatórios do checklist: admin ou quem tem o cargo "controle"
+// Relatórios do checklist: admin, quem tem o cargo "controle" ou um cargo (tag) com a permissão "relatorios"
 function exigirControle(req, res, next) {
   const usuario = db.prepare('SELECT is_admin, cargo FROM usuarios WHERE id = ?').get(req.usuarioId);
-  if (!usuario || (!usuario.is_admin && usuario.cargo !== 'controle')) {
+  if (!usuario || (!usuario.is_admin && usuario.cargo !== 'controle' && !permissoes.tem(req.usuarioId, 'relatorios'))) {
     return res.status(403).json({ erro: 'Essa conta não tem acesso aos relatórios do checklist.' });
   }
   req.ehAdmin = !!usuario.is_admin;

@@ -18,6 +18,7 @@ const avaliacoesRoutes = require('./routes/avaliacoes');
 const cardapio3d = require('./routes/cardapio3d');
 const agenda = require('./routes/agenda');
 const notas = require('./routes/notas');
+const push = require('./push');
 const checklist = require('./routes/checklist');
 const leads = require('./routes/leads');
 const orbittaRotas = require('./routes/orbitta');
@@ -163,6 +164,8 @@ app.use('/api/admin/orbitta', exigirLogin, exigirControle, orbittaRotas.admin);
 app.use('/api/admin/orbitta', exigirLogin, exigirControle, orbittaExtra.admin);
 app.use('/api/orbitta', exigirLogin, orbittaRotas.lojista);
 app.use('/api/orbitta', exigirLogin, orbittaExtra.lojista);
+// Notificações no celular (avisos de cliente sem resposta, fechamento do dia)
+app.use('/api/push', exigirLogin, push.rotas);
 app.use('/api/admin', exigirLogin, exigirAdmin, adminRoutes);
 app.use('/api/cardapio3d', exigirLogin, cardapio3d.exigirPremium, cardapio3d.rotasGestao((req) => req.usuarioId));
 app.use('/api/publico/cardapio3d', cardapio3d.publico);

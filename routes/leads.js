@@ -237,7 +237,25 @@ lojista.get('/reativar', (req, res) => {
       WHERE usuario_id = ? AND data >= ? AND etapa IN ('Follow-Up', 'Perdido') AND telefone IS NOT NULL GROUP BY conversa_id ORDER BY ultima_mensagem DESC LIMIT 100`)
       .all(req.usuarioId, somaDias(hoje, -2)).map((c) => ({ ...c, ultimo_envio: ultimoEnvio(String(c.telefone).replace(/\D/g, '')) }));
   } catch (e) { /* sem Orbitta */ }
-  res.json({ hoje, manuais, orbitta });
+  // Sumiram: conversaram há 3 a 7 dias, não voltaram a falar e não compraram
+  let perdidos = [];
+  try {
+    perdidos = db.prepare(`SELECT conversa_id, MAX(data) AS data, contato, telefone, etapa, MAX(ultima_mensagem) AS ultima_mensagem, vendedor_id
+      FROM orbitta_conversas WHERE usuario_id = ? AND data >= ? AND telefone IS NOT NULL
+      GROUP BY conversa_id HAVING MAX(data) <= ?
+        AND COALESCE(etapa, '') NOT IN ('Convertido', 'Vendido', 'Venda', 'Ganho', 'Fechado')
+      ORDER BY ultima_mensagem DESC LIMIT 150`)
+      .all(req.usuarioId, somaDias(hoje, -7), somaDias(hoje, -3))
+      .map((c) => {
+        let vendedor = null;
+        if (c.vendedor_id) { try { vendedor = (db.prepare('SELECT nome FROM orbitta_membros WHERE id = ?').get(c.vendedor_id) || {}).nome || null; } catch (e) { /* sem nome */ } }
+        return { ...c, vendedor, dias: Math.round((new Date(hoje + 'T12:00:00Z') - new Date(c.data + 'T12:00:00Z')) / 86400000), ultimo_envio: ultimoEnvio(String(c.telefone).replace(/\D/g, '')) };
+      });
+    // Quem já está na lista de Follow-Up/Perdido de cima não repete
+    const jaTem = new Set(orbitta.map((c) => c.conversa_id));
+    perdidos = perdidos.filter((c) => !jaTem.has(c.conversa_id));
+  } catch (e) { /* sem Orbitta */ }
+  res.json({ hoje, manuais, orbitta, perdidos });
 });
 
 lojista.get('/relatorio', (req, res) => {

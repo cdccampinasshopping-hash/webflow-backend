@@ -8,6 +8,8 @@ const express = require('express');
 const db = require('../db');
 const orbitta = require('../lib/orbitta');
 const { enviarEmail, emailInterno } = require('../email');
+const push = require('../push');
+const whatsapp = require('../whatsapp');
 const ob = require('./orbitta');
 const ck = require('./checklist');
 const { hojeBrasilia, somaDias, intervalo, dataValida } = ck;
@@ -26,7 +28,7 @@ for (const col of ['ultimo_de TEXT', 'ultimo_em TEXT', 'checada_msg TEXT', 'aler
 try { db.exec(`ALTER TABLE usuarios ADD COLUMN orbitta_alerta TEXT`); } catch (e) { /* já existe */ }
 db.exec(`CREATE TABLE IF NOT EXISTS orbitta_resumos (usuario_id INTEGER NOT NULL, data TEXT NOT NULL, enviado_em TEXT DEFAULT (datetime('now')), PRIMARY KEY (usuario_id, data))`);
 
-const PADRAO = { minutos: 5, emails: '', alerta: true, resumo: true, inicio: 8, fim: 22 };
+const PADRAO = { minutos: 5, emails: '', whatsapp: '', alerta: true, resumo: true, inicio: 8, fim: 22 };
 function configDe(u) {
   let c = {};
   try { c = JSON.parse(u.orbitta_alerta || '{}') || {}; } catch (e) { c = {}; }
@@ -42,11 +44,34 @@ if (!db.prepare('SELECT 1 FROM migracoes WHERE nome = ?').get('2026-10-07-alerta
     db.prepare('INSERT INTO migracoes (nome) VALUES (?)').run('2026-10-07-alerta-5-min');
   })();
 }
+function whatsDe(c) {
+  return [...new Set(String(c.whatsapp || '').split(/[,;\n]+/).map((t) => whatsapp.normalizarTelefone(t)).filter(Boolean))].slice(0, 5);
+}
+// Quem recebe aviso no celular: a própria conta da loja + quem tem um cargo com a permissão "alertas"
+function destinosPush(u) {
+  let tags = [];
+  try {
+    tags = db.prepare(`SELECT DISTINCT uc.usuario_id, c.permissoes FROM usuario_cargos_tag uc JOIN cargos_tag c ON c.id = uc.cargo_id`).all()
+      .filter((r) => { try { return JSON.parse(r.permissoes || '[]').includes('alertas'); } catch (e) { return false; } }).map((r) => r.usuario_id);
+  } catch (e) { /* sem cargos ainda */ }
+  return [u.id, ...tags];
+}
+// Texto curto agrupado por vendedor: "João: 2 clientes esperando há 8 min · Sem vendedor: 1 há 12 min"
+function textoPorVendedor(lista) {
+  const g = new Map();
+  for (const x of lista) {
+    const k = x.vendedor || 'Sem vendedor';
+    const a = g.get(k) || { n: 0, max: 0 };
+    a.n++; a.max = Math.max(a.max, x.esperando_min || 0); g.set(k, a);
+  }
+  return [...g.entries()].sort((a, b) => b[1].n - a[1].n || b[1].max - a[1].max)
+    .map(([k, a]) => `${k}: ${a.n} cliente${a.n > 1 ? 's' : ''} esperando há ${a.max} min`).join(' · ');
+}
 function emailsDe(c) {
   return String(c.emails || '').split(/[,;\s]+/).map((e) => e.trim().toLowerCase()).filter((e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)).slice(0, 5);
 }
 function lojasVinculadas() {
-  return db.prepare(`SELECT id, nome, negocio_nome, email, checklist_ativo, checklist_desde, orbitta_vinculo, orbitta_alerta FROM usuarios
+  return db.prepare(`SELECT id, nome, negocio_nome, email, checklist_ativo, checklist_desde, orbitta_vinculo, orbitta_alerta, meta_dia FROM usuarios
     WHERE orbitta_vinculo IS NOT NULL AND orbitta_vinculo <> '' AND is_admin = 0`).all().filter((u) => ob.vinculoDe(u));
 }
 const nomeMembro = db.prepare('SELECT nome FROM orbitta_membros WHERE id = ?');
@@ -74,8 +99,9 @@ async function verificarRespostas(u) {
   const marcar = db.prepare('UPDATE orbitta_conversas SET ultimo_de = ?, ultimo_em = ?, checada_msg = ? WHERE usuario_id = ? AND data = ? AND conversa_id = ?');
   for (const c of mudaram) {
     try {
-      const r = await orbitta.chamar('ler_conversa', { id: c.conversa_id, origem: c.origem || 'agente', limit: 3 });
+      const r = await orbitta.chamar('ler_conversa', { id: c.conversa_id, origem: c.origem || 'agente', limit: 8 });
       const msgs = r.mensagens || [];
+      try { ob.registrarRespostas(u.id, c.conversa_id, msgs); } catch (e) { /* não trava o alerta */ }
       const ult = msgs[msgs.length - 1];
       const quando = new Date(ult ? (ult.data || c.ultima_mensagem) : 0);
       if (ult) marcar.run(ult.de === 'cliente' ? 'cliente' : 'loja', isNaN(quando) ? null : quando.toISOString(), c.ultima_mensagem, u.id, hoje, c.conversa_id);
@@ -105,7 +131,8 @@ function htmlAlerta(u, lista, c) {
   return `<!doctype html><html><body style="margin:0;background:#F4F5F8;font-family:Arial,sans-serif;color:#151B26">
   <div style="max-width:600px;margin:0 auto;padding:24px 16px">
     <h2 style="margin:0 0 4px">${lista.length} cliente(s) sem resposta</h2>
-    <p style="margin:0 0 16px;color:#4A5873">${esc(u.negocio_nome || u.nome)} · cliente mandou mensagem há mais de ${c.minutos} minutos e ninguém respondeu.</p>
+    <p style="margin:0 0 8px;color:#4A5873">${esc(u.negocio_nome || u.nome)} · cliente mandou mensagem há mais de ${c.minutos} minutos e ninguém respondeu.</p>
+    <p style="margin:0 0 16px;font-weight:700">${esc(textoPorVendedor(lista))}</p>
     <table style="width:100%;border-collapse:collapse;background:#fff;border-radius:10px">${linhas}</table>
     <p style="margin:18px 0 0"><a href="${SITE_URL}/webflow.html" style="background:#151B26;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:700">Abrir o painel</a></p>
   </div></body></html>`;
@@ -121,13 +148,33 @@ async function rodadaAlertas() {
     // Avisa só uma vez por mensagem do cliente
     const novos = semResposta(u).filter((x) => !x.alerta_em || x.alerta_em < x.ultimo_em);
     if (!novos.length) continue;
+    const loja = u.negocio_nome || u.nome;
+    const porVend = textoPorVendedor(novos);
+    let canais = 0;
+    // 1) Notificação no celular
+    try { if (await push.enviarPara(destinosPush(u), { titulo: `⚠️ ${novos.length} sem resposta · ${loja}`, texto: porVend, url: '/webflow.html', tag: 'sem-resposta-' + u.id })) canais++; }
+    catch (e) { console.error('Orbitta alerta push:', e.message); }
+    // 2) WhatsApp do gerente (modelo aprovado na Meta: {{1}} loja, {{2}} texto)
+    const modeloAlerta = process.env.WHATSAPP_TEMPLATE_ALERTA;
+    if (modeloAlerta) {
+      for (const tel of whatsDe(c)) {
+        const r = await whatsapp.enviarModelo(tel, modeloAlerta, [loja, `${novos.length} cliente(s) sem resposta há mais de ${c.minutos} min. ${porVend}`]);
+        if (r.status === 'enviado') canais++;
+      }
+    }
+    // 3) E-mail
     const para = [...new Set([...emailsDe(c)])];
-    if (!para.length) continue;
-    try {
-      await enviarEmail({ para, assunto: `⚠️ ${novos.length} cliente(s) sem resposta há mais de ${c.minutos} min · ${u.negocio_nome || u.nome}`, html: htmlAlerta(u, novos, c) });
+    if (para.length) {
+      try {
+        await enviarEmail({ para, assunto: `⚠️ ${novos.length} cliente(s) sem resposta há mais de ${c.minutos} min · ${loja}`, html: htmlAlerta(u, novos, c) });
+        canais++;
+      } catch (e) { console.error('Orbitta alerta e-mail:', e.message); }
+    }
+    // Avisa só uma vez por mensagem do cliente
+    if (canais) {
       const marcar = db.prepare('UPDATE orbitta_conversas SET alerta_em = ? WHERE usuario_id = ? AND data = ? AND conversa_id = ?');
       novos.forEach((x) => marcar.run(new Date().toISOString(), u.id, hojeBrasilia(), x.conversa_id));
-    } catch (e) { console.error('Orbitta alerta e-mail:', e.message); }
+    }
   }
 }
 
@@ -182,10 +229,27 @@ function htmlResumo(u, data, d) {
     ${vend ? `<h3 style="margin:6px 0 6px">Por vendedor</h3><table style="width:100%;border-collapse:collapse;background:#fff;font-size:13px">
       <tr style="color:#6B7690;text-align:right"><th style="text-align:left;padding:6px">Vendedor</th><th style="padding:6px">Leads</th><th style="padding:6px">Reativ.</th><th style="padding:6px">Agend.</th><th style="padding:6px">Vendas</th><th style="padding:6px">Conversão</th></tr>${vend}</table>` : ''}
     ${sem}
+    ${d.m.resposta && d.m.resposta.media_seg != null ? `<p style="margin:10px 0 0;font-size:13px">Tempo médio de resposta dos vendedores: <b>${Math.max(1, Math.round(d.m.resposta.media_seg / 60))} min</b> (${d.m.resposta.respostas} respostas medidas)</p>` : ''}
     <p style="margin:10px 0 0;font-size:13px">WhatsApp de reativação enviados pelo painel: <b>${d.whatsapp}</b></p>
     ${ckTxt}
     <p style="margin:18px 0 0"><a href="${SITE_URL}/webflow.html" style="background:#151B26;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:700">Ver no painel</a></p>
   </div></body></html>`;
+}
+
+// Resumo em uma linha (WhatsApp não aceita quebra de linha nos campos do modelo)
+function textoResumo(u, d) {
+  const c = d.comp, l = d.m.loja, partes = [];
+  const leads = c ? c.leads_atendidos.atual : l.conversas, vendas = c ? c.vendas.atual : l.vendas;
+  partes.push(`Leads atendidos: ${leads}${c && c.leads_atendidos.anterior != null ? ` (ontem ${c.leads_atendidos.anterior})` : ''}`);
+  partes.push(`Vendas: ${vendas}${c && c.valor_vendido.atual ? ` (${brl(c.valor_vendido.atual)})` : ''}`);
+  const meta = ob.metaDe(u);
+  if (meta) partes.push(`Meta: ${[meta.leads ? `${leads}/${meta.leads} leads` : '', meta.vendas ? `${vendas}/${meta.vendas} vendas` : ''].filter(Boolean).join(', ')}`);
+  if (d.m.resposta && d.m.resposta.media_seg != null) partes.push(`Resposta média do vendedor: ${Math.max(1, Math.round(d.m.resposta.media_seg / 60))} min`);
+  const top = d.m.vendedores.slice().sort((a, b) => b.vendas - a.vendas || b.pegos - a.pegos)[0];
+  if (top && (top.vendas || top.pegos)) partes.push(`Destaque: ${top.nome} (${top.vendas} venda${top.vendas === 1 ? '' : 's'}, ${top.pegos} leads)`);
+  if (d.ck) partes.push(`Checklist: ${d.ck.feitas}/${d.ck.total}${d.ck.feitas < d.ck.total ? ` (faltaram ${d.ck.total - d.ck.feitas})` : ' completo'}`);
+  partes.push(d.sem.length ? `Sem resposta agora: ${d.sem.length} (${textoPorVendedor(d.sem)})` : 'Ninguém ficou sem resposta');
+  return partes.join(' · ');
 }
 
 async function rodadaResumo(forcar) {
@@ -196,12 +260,21 @@ async function rodadaResumo(forcar) {
     const c = configDe(u);
     if (!c.resumo) continue;
     if (!forcar && db.prepare('SELECT 1 FROM orbitta_resumos WHERE usuario_id = ? AND data = ?').get(u.id, hoje)) continue;
-    const para = [...new Set([...emailsDe(c), emailInterno()].filter(Boolean))];
-    if (!para.length) continue;
     try {
       try { await ob.sincronizarDia(u, hoje); } catch (e) { /* manda com o que tiver */ }
       const d = await dadosDoDia(u, hoje);
-      await enviarEmail({ para, assunto: `Fechamento do dia ${dataBr(hoje)} · ${u.negocio_nome || u.nome}`, html: htmlResumo(u, hoje, d) });
+      const loja = u.negocio_nome || u.nome;
+      const texto = textoResumo(u, d);
+      const para = [...new Set([...emailsDe(c), emailInterno()].filter(Boolean))];
+      if (para.length) {
+        try { await enviarEmail({ para, assunto: `Fechamento do dia ${dataBr(hoje)} · ${loja}`, html: htmlResumo(u, hoje, d) }); }
+        catch (e) { console.error('Orbitta resumo e-mail:', e.message); }
+      }
+      // WhatsApp do gerente (modelo aprovado na Meta: {{1}} loja, {{2}} data, {{3}} resumo)
+      const modelo = process.env.WHATSAPP_TEMPLATE_RESUMO;
+      if (modelo) for (const tel of whatsDe(c)) await whatsapp.enviarModelo(tel, modelo, [loja, dataBr(hoje), texto]);
+      try { await push.enviarPara(destinosPush(u), { titulo: `Fechamento ${dataBr(hoje).slice(0, 5)} · ${loja}`, texto, tag: 'resumo-' + u.id }); }
+      catch (e) { console.error('Orbitta resumo push:', e.message); }
       db.prepare('INSERT OR IGNORE INTO orbitta_resumos (usuario_id, data) VALUES (?, ?)').run(u.id, hoje);
     } catch (e) { console.error('Orbitta resumo:', e.message); }
   }
@@ -319,7 +392,7 @@ lojista.get('/evolucao', async (req, res) => {
 
 const admin = express.Router();
 function lojaPorId(id) {
-  return db.prepare('SELECT id, nome, negocio_nome, email, checklist_ativo, checklist_desde, orbitta_vinculo, orbitta_alerta FROM usuarios WHERE id = ? AND is_admin = 0').get(id);
+  return db.prepare('SELECT id, nome, negocio_nome, email, checklist_ativo, checklist_desde, orbitta_vinculo, orbitta_alerta, meta_dia FROM usuarios WHERE id = ? AND is_admin = 0').get(id);
 }
 admin.get('/rede', async (req, res) => {
   const periodo = ['dia', 'semana', 'mes'].includes(req.query.periodo) ? req.query.periodo : 'dia';
@@ -356,6 +429,7 @@ admin.patch('/alerta/:id', (req, res) => {
   const c = configDe(u);
   if (b.minutos !== undefined) c.minutos = Math.min(720, Math.max(5, Math.round(Number(b.minutos) || 5)));
   if (b.emails !== undefined) c.emails = emailsDe({ emails: b.emails }).join(', ');
+  if (b.whatsapp !== undefined) c.whatsapp = whatsDe({ whatsapp: b.whatsapp }).join(', ');
   if (b.alerta !== undefined) c.alerta = !!b.alerta;
   if (b.resumo !== undefined) c.resumo = !!b.resumo;
   if (b.inicio !== undefined) c.inicio = Math.min(23, Math.max(0, Math.round(Number(b.inicio) || 8)));
@@ -369,12 +443,15 @@ admin.post('/resumo/:id', async (req, res) => {
   const u = lojaPorId(req.params.id); if (!u || !ob.vinculoDe(u)) return res.status(400).json({ erro: 'Loja não vinculada ao Orbitta.' });
   const c = configDe(u);
   const para = [...new Set([...emailsDe(c), emailInterno()].filter(Boolean))];
-  if (!para.length) return res.status(400).json({ erro: 'Coloque pelo menos um e-mail.' });
   try {
     const hoje = hojeBrasilia();
     const d = await dadosDoDia(u, hoje);
-    await enviarEmail({ para, assunto: `Fechamento do dia ${dataBr(hoje)} · ${u.negocio_nome || u.nome} (teste)`, html: htmlResumo(u, hoje, d) });
-    res.json({ ok: true, para });
+    const loja = u.negocio_nome || u.nome, texto = textoResumo(u, d);
+    if (para.length) await enviarEmail({ para, assunto: `Fechamento do dia ${dataBr(hoje)} · ${loja} (teste)`, html: htmlResumo(u, hoje, d) });
+    const zap = [];
+    if (process.env.WHATSAPP_TEMPLATE_RESUMO) for (const tel of whatsDe(c)) zap.push({ tel, ...(await whatsapp.enviarModelo(tel, process.env.WHATSAPP_TEMPLATE_RESUMO, [loja, dataBr(hoje), texto])) });
+    const celulares = await push.enviarPara(destinosPush(u), { titulo: `Fechamento ${dataBr(hoje).slice(0, 5)} · ${loja} (teste)`, texto, tag: 'resumo-' + u.id }).catch(() => 0);
+    res.json({ ok: true, para, whatsapp: zap, celulares, texto, whatsapp_configurado: !!process.env.WHATSAPP_TEMPLATE_RESUMO && whatsapp.configurado() });
   } catch (e) { res.status(502).json({ erro: e.message }); }
 });
 

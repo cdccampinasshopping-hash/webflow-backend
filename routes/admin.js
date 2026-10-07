@@ -451,4 +451,72 @@ router.patch('/vendedores/:id/meta', (req, res) => {
   res.json({ ok: true, meta });
 });
 
+// ---------------- Cargos tipo Discord (tags com permissões) ----------------
+const permissoes = require('../lib/permissoes');
+const hojeBr = () => new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 10);
+const corValida = (c) => (/^#[0-9a-f]{6}$/i.test(String(c || '')) ? String(c) : '#5865F2');
+function limparCargo(b) {
+  const nome = String(b.nome || '').trim().slice(0, 30);
+  if (!nome) throw new Error('Dê um nome pro cargo.');
+  const perms = (Array.isArray(b.permissoes) ? b.permissoes : []).filter((x) => permissoes.IDS.includes(x));
+  return { nome, cor: corValida(b.cor), permissoes: JSON.stringify([...new Set(perms)]) };
+}
+function listaCargos() {
+  return db.prepare(`SELECT c.id, c.nome, c.cor, c.permissoes, c.ordem, (SELECT COUNT(*) FROM usuario_cargos_tag uc WHERE uc.cargo_id = c.id) AS pessoas
+    FROM cargos_tag c ORDER BY c.ordem, c.id`).all().map((c) => ({ ...c, permissoes: permissoes.lerLista(c.permissoes) }));
+}
+function ressincronizarDoCargo(cargoId) {
+  for (const r of db.prepare('SELECT usuario_id FROM usuario_cargos_tag WHERE cargo_id = ?').all(cargoId)) permissoes.sincronizarChecklist(r.usuario_id, hojeBr());
+}
+
+router.get('/cargos', (req, res) => {
+  const atribuicoes = db.prepare('SELECT usuario_id, cargo_id FROM usuario_cargos_tag').all();
+  const pessoas = db.prepare('SELECT id, nome, email, negocio_nome, cargo, is_admin, is_comercial FROM usuarios ORDER BY is_admin DESC, COALESCE(negocio_nome, nome)').all();
+  res.json({ cargos: listaCargos(), permissoes: permissoes.PERMISSOES, atribuicoes, pessoas });
+});
+router.post('/cargos', (req, res) => {
+  try {
+    const c = limparCargo(req.body || {});
+    const ordem = (db.prepare('SELECT MAX(ordem) AS m FROM cargos_tag').get().m || 0) + 1;
+    db.prepare('INSERT INTO cargos_tag (nome, cor, permissoes, ordem) VALUES (?, ?, ?, ?)').run(c.nome, c.cor, c.permissoes, ordem);
+    res.status(201).json({ cargos: listaCargos() });
+  } catch (e) { res.status(400).json({ erro: e.message }); }
+});
+router.patch('/cargos/:id', (req, res) => {
+  const atual = db.prepare('SELECT * FROM cargos_tag WHERE id = ?').get(req.params.id);
+  if (!atual) return res.status(404).json({ erro: 'Cargo não encontrado.' });
+  try {
+    const b = req.body || {};
+    const c = limparCargo({ nome: b.nome ?? atual.nome, cor: b.cor ?? atual.cor, permissoes: b.permissoes ?? permissoes.lerLista(atual.permissoes) });
+    db.prepare('UPDATE cargos_tag SET nome = ?, cor = ?, permissoes = ? WHERE id = ?').run(c.nome, c.cor, c.permissoes, atual.id);
+    ressincronizarDoCargo(atual.id);
+    res.json({ cargos: listaCargos() });
+  } catch (e) { res.status(400).json({ erro: e.message }); }
+});
+router.delete('/cargos/:id', (req, res) => {
+  const atual = db.prepare('SELECT id FROM cargos_tag WHERE id = ?').get(req.params.id);
+  if (!atual) return res.status(404).json({ erro: 'Cargo não encontrado.' });
+  const pessoas = db.prepare('SELECT usuario_id FROM usuario_cargos_tag WHERE cargo_id = ?').all(atual.id);
+  db.transaction(() => {
+    db.prepare('DELETE FROM usuario_cargos_tag WHERE cargo_id = ?').run(atual.id);
+    db.prepare('DELETE FROM cargos_tag WHERE id = ?').run(atual.id);
+  })();
+  pessoas.forEach((p) => permissoes.sincronizarChecklist(p.usuario_id, hojeBr()));
+  res.json({ cargos: listaCargos() });
+});
+// Define todos os cargos (tags) de uma pessoa de uma vez
+router.put('/clientes/:id/tags', (req, res) => {
+  const u = db.prepare('SELECT id, is_admin FROM usuarios WHERE id = ?').get(req.params.id);
+  if (!u) return res.status(404).json({ erro: 'Conta não encontrada.' });
+  const validos = new Set(db.prepare('SELECT id FROM cargos_tag').all().map((c) => c.id));
+  const ids = [...new Set((Array.isArray((req.body || {}).cargos) ? req.body.cargos : []).map(Number).filter((x) => validos.has(x)))];
+  db.transaction(() => {
+    db.prepare('DELETE FROM usuario_cargos_tag WHERE usuario_id = ?').run(u.id);
+    const ins = db.prepare('INSERT INTO usuario_cargos_tag (usuario_id, cargo_id) VALUES (?, ?)');
+    ids.forEach((id) => ins.run(u.id, id));
+  })();
+  permissoes.sincronizarChecklist(u.id, hojeBr());
+  res.json({ tags: permissoes.cargosDe(u.id), permissoes: permissoes.permissoesDeTags(u.id) });
+});
+
 module.exports = router;

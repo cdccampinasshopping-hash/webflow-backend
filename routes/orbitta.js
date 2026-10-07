@@ -38,6 +38,19 @@ db.exec(`
   )
 `);
 
+// Tempo de resposta medido pelo próprio servidor: cliente mandou mensagem → vendedor (atendente) respondeu
+db.exec(`CREATE TABLE IF NOT EXISTS orbitta_respostas (
+  usuario_id INTEGER NOT NULL,
+  data TEXT NOT NULL,
+  conversa_id TEXT NOT NULL,
+  cliente_em TEXT NOT NULL,
+  resposta_em TEXT NOT NULL,
+  segundos INTEGER NOT NULL,
+  PRIMARY KEY (usuario_id, conversa_id, cliente_em)
+)`);
+// Meta do dia da loja: { leads, vendas }
+try { db.exec(`ALTER TABLE usuarios ADD COLUMN meta_dia TEXT`); } catch (e) { /* já existe */ }
+
 // Nome de cada vendedor do Orbitta (as métricas do dia só trazem quem teve movimento naquele dia)
 db.exec(`CREATE TABLE IF NOT EXISTS orbitta_membros (id TEXT PRIMARY KEY, nome TEXT NOT NULL, atualizado_em TEXT DEFAULT (datetime('now')))`);
 const salvarMembro = db.prepare(`INSERT INTO orbitta_membros (id, nome, atualizado_em) VALUES (?, ?, datetime('now'))
@@ -57,6 +70,48 @@ function filtros(v) {
   if ((v.agent_ids || []).length) f.agent_ids = v.agent_ids;
   if ((v.store_ids || []).length) f.store_ids = v.store_ids;
   return f;
+}
+
+// ---------------- tempo de resposta ----------------
+// msgs: mensagens da conversa em ordem (de: cliente | ia | atendente). Grava cada vez que um vendedor
+// respondeu um cliente: do 1º recado do cliente (depois da última fala do vendedor) até a resposta do vendedor.
+const salvarResposta = db.prepare(`INSERT OR IGNORE INTO orbitta_respostas (usuario_id, data, conversa_id, cliente_em, resposta_em, segundos) VALUES (?, ?, ?, ?, ?, ?)`);
+function registrarRespostas(usuarioId, conversaId, msgs) {
+  let inicio = null;
+  for (const m of msgs || []) {
+    const t = new Date(m.data);
+    if (isNaN(t)) continue;
+    if (m.de === 'cliente') { if (!inicio) inicio = t; continue; }
+    if (m.de === 'atendente') {
+      if (inicio) {
+        const seg = Math.round((t - inicio) / 1000);
+        const dia = new Date(inicio.getTime() - 3 * 3600000).toISOString().slice(0, 10);
+        if (seg >= 0 && seg < 12 * 3600) salvarResposta.run(usuarioId, dia, conversaId, inicio.toISOString(), t.toISOString(), seg);
+      }
+      inicio = null;
+    }
+  }
+}
+// Média de tempo de resposta no período: da loja e de cada vendedor
+function temposResposta(usuarioId, ini, fim) {
+  const linhas = db.prepare(`SELECT r.segundos, (SELECT c.vendedor_id FROM orbitta_conversas c WHERE c.usuario_id = r.usuario_id AND c.conversa_id = r.conversa_id
+      AND c.vendedor_id IS NOT NULL ORDER BY c.data DESC LIMIT 1) AS vendedor_id
+    FROM orbitta_respostas r WHERE r.usuario_id = ? AND r.data >= ? AND r.data <= ?`).all(usuarioId, ini, fim);
+  const porVend = {};
+  let tot = 0;
+  for (const l of linhas) {
+    tot += l.segundos;
+    if (!l.vendedor_id) continue;
+    const v = porVend[l.vendedor_id] || (porVend[l.vendedor_id] = { soma: 0, n: 0 });
+    v.soma += l.segundos; v.n++;
+  }
+  const vendedores = {};
+  for (const [id, v] of Object.entries(porVend)) vendedores[id] = { media_seg: Math.round(v.soma / v.n), respostas: v.n };
+  return { media_seg: linhas.length ? Math.round(tot / linhas.length) : null, respostas: linhas.length, vendedores };
+}
+function metaDe(u) {
+  try { const m = JSON.parse(u.meta_dia || 'null'); if (m && (m.leads || m.vendas)) return { leads: Number(m.leads) || 0, vendas: Number(m.vendas) || 0 }; } catch (e) { /* inválida */ }
+  return null;
 }
 
 // ---------------- sincronização ----------------
@@ -212,7 +267,9 @@ function montar(usuarioId, ini, fim) {
   }).filter((v) => v.conversas || v.agendamentos || v.vendas || v.pegos || v.transferencias)
     .sort((a, b) => b.pegos - a.pegos || b.conversas - a.conversas);
   loja.vendas_valor = Math.round(loja.vendas_valor * 100) / 100;
-  return { loja, vendedores, etapas, sem_vendedor: semVendedor, fichas_pendentes: semFicha, atualizado_em: atualizado, erro, tem_dados: dias.length > 0 };
+  const tr = temposResposta(usuarioId, ini, fim);
+  for (const v of vendedores) { const t = tr.vendedores[v.id]; v.resposta_seg = t ? t.media_seg : null; v.respostas = t ? t.respostas : 0; }
+  return { loja, vendedores, etapas, resposta: { media_seg: tr.media_seg, respostas: tr.respostas }, sem_vendedor: semVendedor, fichas_pendentes: semFicha, atualizado_em: atualizado, erro, tem_dados: dias.length > 0 };
 }
 
 // Cartões com comparação (período atual x anterior). O Orbitta já devolve os dois. Guarda 5 min.
@@ -293,12 +350,26 @@ function lerPeriodo(q, padrao) {
 // ---------------- rotas de quem preenche ----------------
 const lojista = express.Router();
 lojista.get('/', async (req, res) => {
-  const u = db.prepare('SELECT id, checklist_ativo, orbitta_vinculo FROM usuarios WHERE id = ?').get(req.usuarioId);
+  const u = db.prepare('SELECT id, checklist_ativo, orbitta_vinculo, meta_dia FROM usuarios WHERE id = ?').get(req.usuarioId);
   if (!u || !u.checklist_ativo) return res.status(403).json({ erro: 'Não ativado pra sua conta.' });
-  if (!vinculoDe(u)) return res.json({ vinculado: false });
+  if (!vinculoDe(u)) return res.json({ vinculado: false, meta: metaDe(u) });
   const { periodo, data } = lerPeriodo(req.query, 'dia');
   const { ini, fim } = intervalo(periodo, data);
-  res.json({ vinculado: true, configurado: orbitta.configurado(), periodo, ini, fim, hoje: hojeBrasilia(), ...montar(u.id, ini, fim), comparado: await comComparado(u, ini, fim), anterior: await vendedoresAnterior(u, periodo, ini, fim).catch(() => null) });
+  const ant = periodoAnterior(periodo, ini);
+  const montado = montar(u.id, ini, fim);
+  const respAnt = temposResposta(u.id, ant.ini, ant.fim);
+  res.json({ vinculado: true, configurado: orbitta.configurado(), periodo, ini, fim, hoje: hojeBrasilia(), ...montado,
+    resposta: { ...montado.resposta, anterior_seg: respAnt.media_seg }, meta: metaDe(u),
+    comparado: await comComparado(u, ini, fim), anterior: await vendedoresAnterior(u, periodo, ini, fim).catch(() => null) });
+});
+// Meta do dia (leads atendidos e vendas). 0 nos dois apaga a meta.
+lojista.put('/meta', (req, res) => {
+  const u = db.prepare('SELECT id, checklist_ativo FROM usuarios WHERE id = ?').get(req.usuarioId);
+  if (!u || !u.checklist_ativo) return res.status(403).json({ erro: 'Não ativado pra sua conta.' });
+  const n = (x) => Math.min(100000, Math.max(0, Math.round(Number(x) || 0)));
+  const m = { leads: n((req.body || {}).leads), vendas: n((req.body || {}).vendas) };
+  db.prepare('UPDATE usuarios SET meta_dia = ? WHERE id = ?').run(m.leads || m.vendas ? JSON.stringify(m) : null, u.id);
+  res.json({ meta: m.leads || m.vendas ? m : null });
 });
 // "Atualizar agora" (no máximo 1x a cada 2 minutos por loja)
 const ultimaManual = new Map();
@@ -365,6 +436,7 @@ admin.get('/loja/:id', async (req, res) => {
 function apagarDoCliente(usuarioId) {
   db.prepare('DELETE FROM orbitta_dia WHERE usuario_id = ?').run(usuarioId);
   db.prepare('DELETE FROM orbitta_conversas WHERE usuario_id = ?').run(usuarioId);
+  db.prepare('DELETE FROM orbitta_respostas WHERE usuario_id = ?').run(usuarioId);
 }
 
-module.exports = { lojista, admin, iniciarSincronizacaoOrbitta, sincronizarDia, montar, resumirPainel, apagarDoCliente, painelComparado, vendedoresAnterior, vinculoDe, filtros, periodoAnterior };
+module.exports = { registrarRespostas, temposResposta, metaDe, lojista, admin, iniciarSincronizacaoOrbitta, sincronizarDia, montar, resumirPainel, apagarDoCliente, painelComparado, vendedoresAnterior, vinculoDe, filtros, periodoAnterior };
