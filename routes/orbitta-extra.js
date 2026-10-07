@@ -258,8 +258,8 @@ async function rodadaResumo(forcar) {
   for (const u of lojasVinculadas()) {
     const c = configDe(u);
     if (!c.resumo) continue;
-    if (!forcar && db.prepare('SELECT 1 FROM orbitta_resumos WHERE usuario_id = ? AND data = ?').get(u.id, hoje)) continue;
-    try {
+    const jaFoi = !forcar && db.prepare('SELECT 1 FROM orbitta_resumos WHERE usuario_id = ? AND data = ?').get(u.id, hoje);
+    if (!jaFoi) try {
       try { await ob.sincronizarDia(u, hoje); } catch (e) { /* manda com o que tiver */ }
       const d = await dadosDoDia(u, hoje);
       const loja = u.negocio_nome || u.nome;
@@ -276,7 +276,106 @@ async function rodadaResumo(forcar) {
       catch (e) { console.error('Orbitta resumo push:', e.message); }
       db.prepare('INSERT OR IGNORE INTO orbitta_resumos (usuario_id, data) VALUES (?, ?)').run(u.id, hoje);
     } catch (e) { console.error('Orbitta resumo:', e.message); }
+    // Fechamento de cada vendedor (uma vez por dia)
+    try {
+      if (forcar || !db.prepare('SELECT 1 FROM vendedor_fechamentos WHERE usuario_id = ? AND data = ?').get(u.id, hoje)) {
+        await enviarFechamentoVendedores(u, hoje);
+        db.prepare('INSERT OR IGNORE INTO vendedor_fechamentos (usuario_id, data) VALUES (?, ?)').run(u.id, hoje);
+      }
+    } catch (e) { console.error('Fechamento vendedor:', e.message); }
   }
+}
+
+// ---------------- 6) Fechamento do vendedor ----------------
+// Contato de cada vendedor (membro do Orbitta) por loja, pra mandar o resumo do dia dele
+db.exec(`CREATE TABLE IF NOT EXISTS vendedor_contatos (
+  usuario_id INTEGER NOT NULL,
+  membro_id TEXT NOT NULL,
+  whatsapp TEXT,
+  email TEXT,
+  atualizado_em TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (usuario_id, membro_id)
+)`);
+db.exec(`CREATE TABLE IF NOT EXISTS vendedor_fechamentos (usuario_id INTEGER NOT NULL, data TEXT NOT NULL, enviado_em TEXT DEFAULT (datetime('now')), PRIMARY KEY (usuario_id, data))`);
+const DEMORA_SEG = 5 * 60;
+const tempoTxt = (seg) => (seg == null ? '—' : seg < 60 ? seg + 's' : seg < 3600 ? Math.round(seg / 60) + ' min' : Math.floor(seg / 3600) + 'h' + String(Math.round((seg % 3600) / 60)).padStart(2, '0'));
+
+// Placar e números de cada vendedor no dia (mesma ordem do placar do painel)
+function fechamentoVendedores(u, data) {
+  const m = ob.montar(u.id, data, data);
+  const pendentes = new Map();
+  if (data === hojeBrasilia()) {
+    try { for (const x of semResposta(u)) if (x.vendedor_id) pendentes.set(x.vendedor_id, (pendentes.get(x.vendedor_id) || 0) + 1); } catch (e) { /* sem Orbitta */ }
+  }
+  // Quantas vezes cada vendedor deixou o cliente esperando mais de 5 min hoje
+  const demoras = new Map();
+  try {
+    db.prepare(`SELECT r.segundos, (SELECT c.vendedor_id FROM orbitta_conversas c WHERE c.usuario_id = r.usuario_id AND c.conversa_id = r.conversa_id
+        AND c.vendedor_id IS NOT NULL ORDER BY c.data DESC LIMIT 1) AS vendedor_id
+      FROM orbitta_respostas r WHERE r.usuario_id = ? AND r.data = ? AND r.segundos > ?`).all(u.id, data, DEMORA_SEG)
+      .forEach((r) => { if (r.vendedor_id) demoras.set(r.vendedor_id, (demoras.get(r.vendedor_id) || 0) + 1); });
+  } catch (e) { /* sem tabela */ }
+  const contatos = new Map(db.prepare('SELECT membro_id, whatsapp, email FROM vendedor_contatos WHERE usuario_id = ?').all(u.id).map((c) => [c.membro_id, c]));
+  const vs = m.vendedores.filter((v) => v.id && (v.pegos || v.vendas || v.conversas || pendentes.get(v.id)))
+    .sort((a, b) => b.vendas - a.vendas || b.pegos - a.pegos || (a.resposta_seg ?? 1e9) - (b.resposta_seg ?? 1e9));
+  const loja = u.negocio_nome || u.nome;
+  return vs.map((v, i) => {
+    const f = { membro_id: v.id, nome: v.nome, posicao: i + 1, total: vs.length, pegos: v.pegos, novos: v.novos, reativacoes: v.reativacoes,
+      vendas: v.vendas, valor_vendido: v.valor_vendido, resposta_seg: v.resposta_seg, sem_resposta: pendentes.get(v.id) || 0, demoras: demoras.get(v.id) || 0,
+      contato: contatos.get(v.id) ? { whatsapp: contatos.get(v.id).whatsapp || '', email: contatos.get(v.id).email || '' } : { whatsapp: '', email: '' } };
+    f.texto = textoVendedor(f, loja, data);
+    return f;
+  });
+}
+function textoVendedor(f, loja, data) {
+  const primeiro = String(f.nome || '').trim().split(/\s+/)[0] || 'vendedor';
+  const medalha = ['🥇', '🥈', '🥉'][f.posicao - 1] || '';
+  const partes = [
+    `Fechamento ${dataBr(data).slice(0, 5)} · ${loja}`,
+    `${primeiro}, você ficou em ${f.posicao}º de ${f.total} no placar ${medalha}`.trim(),
+    `Leads que pegou: ${f.pegos} (${f.novos} novos, ${f.reativacoes} reativações)`,
+    `Vendas: ${f.vendas}${f.valor_vendido ? ` (${brl(f.valor_vendido)})` : ''}`,
+    `Tempo médio de resposta: ${tempoTxt(f.resposta_seg)}`,
+    f.demoras ? `Cliente esperou mais de 5 min: ${f.demoras} vez${f.demoras > 1 ? 'es' : ''}` : 'Nenhum cliente esperou mais de 5 min 👏',
+    f.sem_resposta ? `Ficaram sem resposta agora: ${f.sem_resposta}` : 'Ninguém ficou sem resposta',
+  ];
+  return partes.join(' · ');
+}
+function htmlVendedor(f, loja, data) {
+  const linha = (t, v, cor) => `<tr><td style="padding:8px 6px;border-bottom:1px solid #E3E6EC;color:#4A5873">${t}</td><td style="padding:8px 6px;border-bottom:1px solid #E3E6EC;text-align:right;font-weight:700;${cor ? 'color:' + cor : ''}">${v}</td></tr>`;
+  return `<!doctype html><html><body style="margin:0;background:#F4F5F8;font-family:Arial,sans-serif;color:#151B26">
+  <div style="max-width:520px;margin:0 auto;padding:24px 16px">
+    <h2 style="margin:0 0 2px">Seu fechamento do dia</h2>
+    <p style="margin:0 0 16px;color:#4A5873">${esc(f.nome)} · ${esc(loja)} · ${dataBr(data)}</p>
+    <div style="background:#151B26;color:#fff;border-radius:12px;padding:16px;margin:0 0 14px;font-size:18px;font-weight:700">${['🥇', '🥈', '🥉'][f.posicao - 1] || ''} ${f.posicao}º de ${f.total} no placar</div>
+    <table style="width:100%;border-collapse:collapse;background:#fff;border-radius:10px">
+      ${linha('Leads que pegou', `${f.pegos} <span style="font-weight:400;color:#6B7690">(${f.novos} novos · ${f.reativacoes} reativ.)</span>`)}
+      ${linha('Vendas', `${f.vendas}${f.valor_vendido ? ' · ' + brl(f.valor_vendido) : ''}`, f.vendas ? '#0F8F6B' : '')}
+      ${linha('Tempo médio de resposta', tempoTxt(f.resposta_seg), f.resposta_seg == null ? '' : f.resposta_seg <= 300 ? '#0F8F6B' : f.resposta_seg <= 900 ? '#B54708' : '#B42318')}
+      ${linha('Cliente esperou mais de 5 min', f.demoras, f.demoras ? '#B42318' : '#0F8F6B')}
+      ${linha('Sem resposta no fechamento', f.sem_resposta, f.sem_resposta ? '#B42318' : '#0F8F6B')}
+    </table>
+  </div></body></html>`;
+}
+// Manda pra cada vendedor que tem e-mail e/ou WhatsApp cadastrado
+async function enviarFechamentoVendedores(u, data, teste) {
+  const loja = u.negocio_nome || u.nome;
+  const modelo = process.env.WHATSAPP_TEMPLATE_VENDEDOR;
+  const out = [];
+  for (const f of fechamentoVendedores(u, data)) {
+    const r = { nome: f.nome, email: null, whatsapp: null };
+    if (f.contato.email) {
+      try { await enviarEmail({ para: [f.contato.email], assunto: `Seu fechamento ${dataBr(data)} · ${loja}${teste ? ' (teste)' : ''}`, html: htmlVendedor(f, loja, data) }); r.email = 'enviado'; }
+      catch (e) { r.email = 'erro'; }
+    }
+    // Modelo aprovado na Meta: {{1}} vendedor, {{2}} loja, {{3}} resumo
+    if (f.contato.whatsapp && modelo) {
+      const z = await whatsapp.enviarModelo(f.contato.whatsapp, modelo, [String(f.nome).split(/\s+/)[0], loja, f.texto]);
+      r.whatsapp = z.status;
+    }
+    if (r.email || r.whatsapp) out.push(r);
+  }
+  return out;
 }
 
 function iniciarExtrasOrbitta() {
@@ -383,6 +482,32 @@ lojista.get('/agendamentos', async (req, res) => {
   try { res.json({ vinculado: true, dia, hoje, lista: await agendamentosDe(u, dia) }); }
   catch (e) { res.status(502).json({ erro: e.message }); }
 });
+lojista.get('/fechamento', (req, res) => {
+  const u = lojaDoUsuario(req, res); if (!u) return;
+  const data = dataValida(req.query.data) ? req.query.data : hojeBrasilia();
+  res.json({ vinculado: true, data, hoje: hojeBrasilia(), whatsapp_auto: !!process.env.WHATSAPP_TEMPLATE_VENDEDOR && whatsapp.configurado(),
+    loja: u.negocio_nome || u.nome, vendedores: fechamentoVendedores(u, data) });
+});
+lojista.put('/vendedores/:membro/contato', (req, res) => {
+  const u = lojaDoUsuario(req, res); if (!u) return;
+  const membro = String(req.params.membro || '').slice(0, 64);
+  if (!/^[\w-]{4,64}$/.test(membro)) return res.status(400).json({ erro: 'Vendedor inválido.' });
+  const b = req.body || {};
+  const zap = b.whatsapp ? whatsapp.normalizarTelefone(b.whatsapp) : '';
+  if (b.whatsapp && !zap) return res.status(400).json({ erro: 'WhatsApp inválido. Use DDD + número.' });
+  const email = String(b.email || '').trim().toLowerCase().slice(0, 120);
+  if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.status(400).json({ erro: 'E-mail inválido.' });
+  db.prepare(`INSERT INTO vendedor_contatos (usuario_id, membro_id, whatsapp, email, atualizado_em) VALUES (?, ?, ?, ?, datetime('now'))
+    ON CONFLICT (usuario_id, membro_id) DO UPDATE SET whatsapp = excluded.whatsapp, email = excluded.email, atualizado_em = excluded.atualizado_em`)
+    .run(u.id, membro, zap || null, email || null);
+  res.json({ contato: { whatsapp: zap || '', email } });
+});
+// Manda o fechamento de hoje agora (pra testar)
+lojista.post('/fechamento/enviar', async (req, res) => {
+  const u = lojaDoUsuario(req, res); if (!u) return;
+  try { const enviados = await enviarFechamentoVendedores(u, hojeBrasilia(), true); res.json({ ok: true, enviados }); }
+  catch (e) { res.status(502).json({ erro: e.message }); }
+});
 lojista.get('/evolucao', async (req, res) => {
   const u = lojaDoUsuario(req, res); if (!u) return;
   try { res.json({ vinculado: true, ...(await evolucao(u, 30)) }); }
@@ -468,6 +593,21 @@ lojas.get('/', (req, res) => {
   const me = db.prepare('SELECT alerta_lojas_off FROM usuarios WHERE id = ?').get(req.usuarioId) || {};
   res.json({ lojas: lista, alertas: permissoes.lojasPor(req.usuarioId, 'alertas'), silenciadas: permissoes.lerIds(me.alerta_lojas_off) });
 });
+// Sem resposta de todas as lojas que a pessoa enxerga (e da própria, se for loja), numa lista só
+lojas.get('/sem-resposta', (req, res) => {
+  const ids = permissoes.lojasVisiveis(req.usuarioId).map((l) => l.id);
+  ids.unshift(Number(req.usuarioId));
+  const lista = [];
+  let minutos = PADRAO.minutos;
+  for (const id of ids) {
+    const u = lojaPorId(id);
+    if (!u || !ob.vinculoDe(u)) continue;
+    minutos = configDe(u).minutos;
+    try { semResposta(u).forEach((x) => lista.push({ ...x, loja_id: u.id, loja: u.negocio_nome || u.nome })); } catch (e) { /* pula a loja */ }
+  }
+  lista.sort((a, b) => b.esperando_min - a.esperando_min);
+  res.json({ vinculado: true, minutos, lista });
+});
 // Liga/desliga os avisos de uma loja só pra esta pessoa
 lojas.put('/alertas', (req, res) => {
   const alcance = new Set(permissoes.lojasPor(req.usuarioId, 'alertas').map((l) => l.id));
@@ -476,4 +616,4 @@ lojas.put('/alertas', (req, res) => {
   res.json({ silenciadas: off });
 });
 
-module.exports = { lojas, lojista, admin, iniciarExtrasOrbitta, verificarRespostas, semResposta, rodadaAlertas, rodadaResumo, htmlResumo, dadosDoDia, evolucao, agendamentosDe, linhaRede, configDe };
+module.exports = { fechamentoVendedores, enviarFechamentoVendedores, lojas, lojista, admin, iniciarExtrasOrbitta, verificarRespostas, semResposta, rodadaAlertas, rodadaResumo, htmlResumo, dadosDoDia, evolucao, agendamentosDe, linhaRede, configDe };
