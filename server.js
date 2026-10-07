@@ -20,6 +20,7 @@ const agenda = require('./routes/agenda');
 const notas = require('./routes/notas');
 const checklist = require('./routes/checklist');
 const leads = require('./routes/leads');
+const orbittaRotas = require('./routes/orbitta');
 const { exigirLogin, exigirAdmin, exigirControle } = require('./middleware/auth');
 const { iniciarAgendamentoBackup } = require('./jobs/backup');
 const { iniciarVerificacaoAssinaturas } = require('./jobs/assinaturas');
@@ -156,6 +157,9 @@ app.use('/api/checklist', exigirLogin, checklist.lojista);
 // Controle de leads do dia (quem atendeu, reativações, quem ficou sem resposta)
 app.use('/api/admin/leads', exigirLogin, exigirControle, leads.admin);
 app.use('/api/leads', exigirLogin, leads.lojista);
+// Dados automáticos do Orbitta (vendedores, novos x reativações)
+app.use('/api/admin/orbitta', exigirLogin, exigirControle, orbittaRotas.admin);
+app.use('/api/orbitta', exigirLogin, orbittaRotas.lojista);
 app.use('/api/admin', exigirLogin, exigirAdmin, adminRoutes);
 app.use('/api/cardapio3d', exigirLogin, cardapio3d.exigirPremium, cardapio3d.rotasGestao((req) => req.usuarioId));
 app.use('/api/publico/cardapio3d', cardapio3d.publico);
@@ -188,5 +192,6 @@ app.listen(PORT, '0.0.0.0', () => {
   iniciarRelatoriosMensais();
   iniciarRoboAgenda();
   iniciarAvisosChecklist();
+  orbittaRotas.iniciarSincronizacaoOrbitta();
   notas.iniciarBuscaSefaz();
 });
