@@ -200,6 +200,36 @@ function montar(usuarioId, ini, fim) {
   return { loja, vendedores, etapas, sem_vendedor: semVendedor, fichas_pendentes: semFicha, atualizado_em: atualizado, erro, tem_dados: dias.length > 0 };
 }
 
+// Cartões com comparação (período atual x anterior). O Orbitta já devolve os dois. Guarda 10 min.
+const cacheComparado = new Map();
+async function painelComparado(u, ini, fim) {
+  const v = vinculoDe(u); if (!v || !orbitta.configurado()) return null;
+  const chave = `${u.id}|${ini}|${fim}`;
+  const c = cacheComparado.get(chave);
+  if (c && Date.now() - c.em < 10 * 60 * 1000) return c.dados;
+  const p = await orbitta.chamar('metricas_painel', { start_date: ini, end_date: fim, ...filtros(v) });
+  const soma = (fn) => ['agentes', 'unidades'].reduce((t, lado) => t + (p && p[lado] ? Number(fn(p[lado]) || 0) : 0), 0);
+  const par = (fa, fb) => ({ atual: soma(fa), anterior: soma(fb) });
+  const dados = {
+    leads_atendidos: par((x) => x.current_conv && x.current_conv.leads_total, (x) => x.prev_conv && x.prev_conv.leads_total),
+    leads_novos: par((x) => x.current_conv && x.current_conv.leads_new, (x) => x.prev_conv && x.prev_conv.leads_new),
+    leads_recorrentes: par((x) => x.current_conv && x.current_conv.leads_returning, (x) => x.prev_conv && x.prev_conv.leads_returning),
+    atendidos_ia: par((x) => x.current_conv && x.current_conv.leads_ai_only, (x) => x.prev_conv && x.prev_conv.leads_ai_only),
+    atendidos_ia_humano: par((x) => x.current_conv && x.current_conv.leads_ai_human, (x) => x.prev_conv && x.prev_conv.leads_ai_human),
+    agend_detectados: par((x) => x.current_bookings && x.current_bookings.total, (x) => x.prev_bookings && x.prev_bookings.total),
+    agend_periodo: par((x) => x.current_scheduled && x.current_scheduled.scheduled_total, (x) => x.prev_scheduled && x.prev_scheduled.scheduled_total),
+    comparecimentos: par((x) => x.current_scheduled && x.current_scheduled.scheduled_attended, (x) => x.prev_scheduled && x.prev_scheduled.scheduled_attended),
+    vendas: par((x) => x.current_bookings && x.current_bookings.confirmed_count, (x) => x.prev_bookings && x.prev_bookings.confirmed_count),
+    valor_vendido: par((x) => x.current_bookings && x.current_bookings.confirmed_total, (x) => x.prev_bookings && x.prev_bookings.confirmed_total),
+  };
+  cacheComparado.set(chave, { em: Date.now(), dados });
+  if (cacheComparado.size > 500) cacheComparado.delete(cacheComparado.keys().next().value);
+  return dados;
+}
+async function comComparado(u, ini, fim) {
+  try { return await painelComparado(u, ini, fim); } catch (e) { return null; }
+}
+
 function lerPeriodo(q, padrao) {
   return {
     periodo: ['dia', 'semana', 'mes'].includes(q.periodo) ? q.periodo : padrao,
@@ -209,13 +239,13 @@ function lerPeriodo(q, padrao) {
 
 // ---------------- rotas de quem preenche ----------------
 const lojista = express.Router();
-lojista.get('/', (req, res) => {
+lojista.get('/', async (req, res) => {
   const u = db.prepare('SELECT id, checklist_ativo, orbitta_vinculo FROM usuarios WHERE id = ?').get(req.usuarioId);
   if (!u || !u.checklist_ativo) return res.status(403).json({ erro: 'Não ativado pra sua conta.' });
   if (!vinculoDe(u)) return res.json({ vinculado: false });
   const { periodo, data } = lerPeriodo(req.query, 'dia');
   const { ini, fim } = intervalo(periodo, data);
-  res.json({ vinculado: true, configurado: orbitta.configurado(), periodo, ini, fim, hoje: hojeBrasilia(), ...montar(u.id, ini, fim) });
+  res.json({ vinculado: true, configurado: orbitta.configurado(), periodo, ini, fim, hoje: hojeBrasilia(), ...montar(u.id, ini, fim), comparado: await comComparado(u, ini, fim) });
 });
 // "Atualizar agora" (no máximo 1x a cada 2 minutos por loja)
 const ultimaManual = new Map();
@@ -224,6 +254,7 @@ lojista.post('/atualizar', async (req, res) => {
   if (!u || !u.checklist_ativo || !vinculoDe(u)) return res.status(403).json({ erro: 'Loja não vinculada ao Orbitta.' });
   if (Date.now() - (ultimaManual.get(u.id) || 0) < 120000) return res.status(429).json({ erro: 'Acabou de atualizar. Tente de novo em 2 minutos.' });
   ultimaManual.set(u.id, Date.now());
+  for (const k of [...cacheComparado.keys()]) if (k.startsWith(u.id + '|')) cacheComparado.delete(k);
   try { await sincronizarDia(u, hojeBrasilia()); res.json({ ok: true }); }
   catch (e) { res.status(502).json({ erro: e.message }); }
 });
@@ -269,13 +300,13 @@ admin.post('/sincronizar', async (req, res) => {
 });
 
 // Uma loja específica (o controle e o admin veem no relatório de leads)
-admin.get('/loja/:id', (req, res) => {
+admin.get('/loja/:id', async (req, res) => {
   const u = db.prepare('SELECT id, nome, negocio_nome, orbitta_vinculo FROM usuarios WHERE id = ?').get(req.params.id);
   if (!u) return res.status(404).json({ erro: 'Loja não encontrada.' });
   if (!vinculoDe(u)) return res.json({ vinculado: false, loja: { id: u.id, nome: u.nome, negocio_nome: u.negocio_nome } });
   const { periodo, data } = lerPeriodo(req.query, 'dia');
   const { ini, fim } = intervalo(periodo, data);
-  res.json({ vinculado: true, loja: { id: u.id, nome: u.nome, negocio_nome: u.negocio_nome }, periodo, ini, fim, hoje: hojeBrasilia(), ...montar(u.id, ini, fim) });
+  res.json({ vinculado: true, loja: { id: u.id, nome: u.nome, negocio_nome: u.negocio_nome }, periodo, ini, fim, hoje: hojeBrasilia(), ...montar(u.id, ini, fim), comparado: await comComparado(u, ini, fim) });
 });
 
 function apagarDoCliente(usuarioId) {
@@ -283,4 +314,4 @@ function apagarDoCliente(usuarioId) {
   db.prepare('DELETE FROM orbitta_conversas WHERE usuario_id = ?').run(usuarioId);
 }
 
-module.exports = { lojista, admin, iniciarSincronizacaoOrbitta, sincronizarDia, montar, resumirPainel, apagarDoCliente };
+module.exports = { lojista, admin, iniciarSincronizacaoOrbitta, sincronizarDia, montar, resumirPainel, apagarDoCliente, painelComparado };
