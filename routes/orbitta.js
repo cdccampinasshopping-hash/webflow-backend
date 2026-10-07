@@ -230,6 +230,43 @@ async function comComparado(u, ini, fim) {
   try { return await painelComparado(u, ini, fim); } catch (e) { return null; }
 }
 
+// Período anterior de mesmo tipo (dia anterior, semana anterior, mês anterior)
+function periodoAnterior(periodo, ini) {
+  if (periodo === 'mes') { const d = new Date(ini + 'T12:00:00Z'); d.setUTCMonth(d.getUTCMonth() - 1); return intervalo('mes', d.toISOString().slice(0, 10)); }
+  if (periodo === 'semana') return intervalo('semana', somaDias(ini, -7));
+  return intervalo('dia', somaDias(ini, -1));
+}
+
+// Cada vendedor no período anterior: métricas do Orbitta (vêm prontas) + leads que pegou (do que já foi sincronizado)
+const cacheEquipe = new Map();
+async function vendedoresAnterior(u, periodo, ini, fim) {
+  const v = vinculoDe(u); if (!v || !orbitta.configurado()) return null;
+  const ant = periodoAnterior(periodo, ini);
+  const out = {};
+  try {
+    const chave = `${u.id}|${ini}|${fim}`;
+    let eq = cacheEquipe.get(chave);
+    if (!eq || Date.now() - eq.em > 10 * 60 * 1000) {
+      const r = await orbitta.chamar('metricas_equipe', { start_date: ini, end_date: fim, ...filtros(v) });
+      eq = { em: Date.now(), membros: r.membros_periodo_anterior || [] };
+      cacheEquipe.set(chave, eq);
+      if (cacheEquipe.size > 500) cacheEquipe.delete(cacheEquipe.keys().next().value);
+    }
+    for (const m of eq.membros) {
+      out[m.membro_id] = {
+        conversas: (m.conversas_atendidas_agentes || 0) + (m.conversas_atendidas_unidades || 0),
+        agendamentos: m.agendamentos || 0, vendas: m.vendas || 0, valor_vendido: Number(m.valor_vendido) || 0, transferencias: m.transferencias || 0,
+      };
+    }
+  } catch (e) { /* sem comparação de métricas */ }
+  const m = montar(u.id, ant.ini, ant.fim);
+  const temConversas = db.prepare('SELECT 1 FROM orbitta_conversas WHERE usuario_id = ? AND data >= ? AND data <= ? LIMIT 1').get(u.id, ant.ini, ant.fim);
+  for (const x of m.vendedores) {
+    out[x.id] = { ...(out[x.id] || {}), ...(temConversas ? { pegos: x.pegos, novos: x.novos, reativacoes: x.reativacoes } : {}) };
+  }
+  return { ini: ant.ini, fim: ant.fim, tem_leads: !!temConversas, vendedores: out };
+}
+
 function lerPeriodo(q, padrao) {
   return {
     periodo: ['dia', 'semana', 'mes'].includes(q.periodo) ? q.periodo : padrao,
@@ -245,7 +282,7 @@ lojista.get('/', async (req, res) => {
   if (!vinculoDe(u)) return res.json({ vinculado: false });
   const { periodo, data } = lerPeriodo(req.query, 'dia');
   const { ini, fim } = intervalo(periodo, data);
-  res.json({ vinculado: true, configurado: orbitta.configurado(), periodo, ini, fim, hoje: hojeBrasilia(), ...montar(u.id, ini, fim), comparado: await comComparado(u, ini, fim) });
+  res.json({ vinculado: true, configurado: orbitta.configurado(), periodo, ini, fim, hoje: hojeBrasilia(), ...montar(u.id, ini, fim), comparado: await comComparado(u, ini, fim), anterior: await vendedoresAnterior(u, periodo, ini, fim).catch(() => null) });
 });
 // "Atualizar agora" (no máximo 1x a cada 2 minutos por loja)
 const ultimaManual = new Map();
@@ -254,7 +291,7 @@ lojista.post('/atualizar', async (req, res) => {
   if (!u || !u.checklist_ativo || !vinculoDe(u)) return res.status(403).json({ erro: 'Loja não vinculada ao Orbitta.' });
   if (Date.now() - (ultimaManual.get(u.id) || 0) < 120000) return res.status(429).json({ erro: 'Acabou de atualizar. Tente de novo em 2 minutos.' });
   ultimaManual.set(u.id, Date.now());
-  for (const k of [...cacheComparado.keys()]) if (k.startsWith(u.id + '|')) cacheComparado.delete(k);
+  for (const c of [cacheComparado, cacheEquipe]) for (const k of [...c.keys()]) if (k.startsWith(u.id + '|')) c.delete(k);
   try { await sincronizarDia(u, hojeBrasilia()); res.json({ ok: true }); }
   catch (e) { res.status(502).json({ erro: e.message }); }
 });
@@ -306,7 +343,7 @@ admin.get('/loja/:id', async (req, res) => {
   if (!vinculoDe(u)) return res.json({ vinculado: false, loja: { id: u.id, nome: u.nome, negocio_nome: u.negocio_nome } });
   const { periodo, data } = lerPeriodo(req.query, 'dia');
   const { ini, fim } = intervalo(periodo, data);
-  res.json({ vinculado: true, loja: { id: u.id, nome: u.nome, negocio_nome: u.negocio_nome }, periodo, ini, fim, hoje: hojeBrasilia(), ...montar(u.id, ini, fim), comparado: await comComparado(u, ini, fim) });
+  res.json({ vinculado: true, loja: { id: u.id, nome: u.nome, negocio_nome: u.negocio_nome }, periodo, ini, fim, hoje: hojeBrasilia(), ...montar(u.id, ini, fim), comparado: await comComparado(u, ini, fim), anterior: await vendedoresAnterior(u, periodo, ini, fim).catch(() => null) });
 });
 
 function apagarDoCliente(usuarioId) {
@@ -314,4 +351,4 @@ function apagarDoCliente(usuarioId) {
   db.prepare('DELETE FROM orbitta_conversas WHERE usuario_id = ?').run(usuarioId);
 }
 
-module.exports = { lojista, admin, iniciarSincronizacaoOrbitta, sincronizarDia, montar, resumirPainel, apagarDoCliente, painelComparado };
+module.exports = { lojista, admin, iniciarSincronizacaoOrbitta, sincronizarDia, montar, resumirPainel, apagarDoCliente, painelComparado, vendedoresAnterior };
