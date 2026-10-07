@@ -45,8 +45,14 @@ function exigirComercial(req, res, next) {
 }
 
 // Relatórios do checklist: admin, quem tem o cargo "controle" ou um cargo (tag) com a permissão "relatorios"
+// Quem preenche o checklist também vê a Rede de lojas (só leitura: o ranking e o detalhe de cada loja)
+const LEITURA_REDE = [/^\/rede\/?$/, /^\/loja\/\d+\/?$/, /^\/loja\/\d+\/(evolucao|sem-resposta)\/?$/];
 function exigirControle(req, res, next) {
   const usuario = db.prepare('SELECT is_admin, cargo FROM usuarios WHERE id = ?').get(req.usuarioId);
+  const leituraRede = req.method === 'GET' && (
+    (req.baseUrl === '/api/admin/orbitta' && LEITURA_REDE.some((r) => r.test(req.path)))
+    || (req.baseUrl === '/api/admin/leads' && /^\/loja\/\d+\/?$/.test(req.path)));
+  if (usuario && usuario.cargo === 'checklist' && leituraRede) { req.ehAdmin = false; return next(); }
   if (!usuario || (!usuario.is_admin && usuario.cargo !== 'controle' && !permissoes.tem(req.usuarioId, 'relatorios'))) {
     return res.status(403).json({ erro: 'Essa conta não tem acesso aos relatórios do checklist.' });
   }
