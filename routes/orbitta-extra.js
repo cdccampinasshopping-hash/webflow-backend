@@ -522,9 +522,9 @@ function lojaPorId(id) {
   return db.prepare('SELECT id, nome, negocio_nome, email, checklist_ativo, checklist_desde, orbitta_vinculo, orbitta_alerta, meta_dia FROM usuarios WHERE id = ? AND is_admin = 0').get(id);
 }
 admin.get('/rede', async (req, res) => {
-  const periodo = ['dia', 'semana', 'mes'].includes(req.query.periodo) ? req.query.periodo : 'dia';
+  const periodo = ['dia', 'semana', 'mes', 'livre'].includes(req.query.periodo) ? req.query.periodo : 'dia';
   const data = dataValida(req.query.data) ? req.query.data : hojeBrasilia();
-  const { ini, fim } = intervalo(periodo, data);
+  const { ini, fim } = intervalo(periodo, data, req.query.ate);
   const lojas = lojasVinculadas();
   const linhas = [];
   for (const u of lojas) { try { linhas.push(await linhaRede(u, periodo, ini, fim)); } catch (e) { /* pula a loja com erro */ } }

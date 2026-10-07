@@ -310,7 +310,8 @@ async function comComparado(u, ini, fim) {
 }
 
 // Período anterior de mesmo tipo (dia anterior, semana anterior, mês anterior)
-function periodoAnterior(periodo, ini) {
+function periodoAnterior(periodo, ini, fim) {
+  if (periodo === 'livre') { const n = diasEntre(ini, fim || ini).length; return { ini: somaDias(ini, -n), fim: somaDias(ini, -1) }; }
   if (periodo === 'mes') { const d = new Date(ini + 'T12:00:00Z'); d.setUTCMonth(d.getUTCMonth() - 1); return intervalo('mes', d.toISOString().slice(0, 10)); }
   if (periodo === 'semana') return intervalo('semana', somaDias(ini, -7));
   return intervalo('dia', somaDias(ini, -1));
@@ -321,7 +322,7 @@ const cacheEquipe = new Map();
 function vendedoresAnterior(u, periodo, ini, fim) { return comLoja(u, () => _vendedoresAnterior(u, periodo, ini, fim)); }
 async function _vendedoresAnterior(u, periodo, ini, fim) {
   const v = vinculoDe(u); if (!v || !orbitta.configurado()) return null;
-  const ant = periodoAnterior(periodo, ini);
+  const ant = periodoAnterior(periodo, ini, fim);
   const out = {};
   try {
     const chave = `${u.id}|${ini}|${fim}`;
@@ -350,7 +351,8 @@ async function _vendedoresAnterior(u, periodo, ini, fim) {
 
 function lerPeriodo(q, padrao) {
   return {
-    periodo: ['dia', 'semana', 'mes'].includes(q.periodo) ? q.periodo : padrao,
+    periodo: ['dia', 'semana', 'mes', 'livre'].includes(q.periodo) ? q.periodo : padrao,
+    ate: dataValida(q.ate) ? q.ate : null,
     data: dataValida(q.data) ? q.data : hojeBrasilia(),
   };
 }
@@ -361,9 +363,9 @@ lojista.get('/', async (req, res) => {
   const u = db.prepare('SELECT id, checklist_ativo, orbitta_vinculo, meta_dia FROM usuarios WHERE id = ?').get(req.usuarioId);
   if (!u || (!u.checklist_ativo && !req.vendoOutraLoja)) return res.status(403).json({ erro: 'Não ativado pra sua conta.' });
   if (!vinculoDe(u)) return res.json({ vinculado: false, meta: metaDe(u) });
-  const { periodo, data } = lerPeriodo(req.query, 'dia');
-  const { ini, fim } = intervalo(periodo, data);
-  const ant = periodoAnterior(periodo, ini);
+  const { periodo, data, ate } = lerPeriodo(req.query, 'dia');
+  const { ini, fim } = intervalo(periodo, data, ate);
+  const ant = periodoAnterior(periodo, ini, fim);
   const montado = montar(u.id, ini, fim);
   const respAnt = temposResposta(u.id, ant.ini, ant.fim);
   res.json({ vinculado: true, configurado: orbitta.configurado(), periodo, ini, fim, hoje: hojeBrasilia(), ...montado,
@@ -475,8 +477,8 @@ admin.get('/loja/:id', async (req, res) => {
   const u = db.prepare('SELECT id, nome, negocio_nome, orbitta_vinculo FROM usuarios WHERE id = ?').get(req.params.id);
   if (!u) return res.status(404).json({ erro: 'Loja não encontrada.' });
   if (!vinculoDe(u)) return res.json({ vinculado: false, loja: { id: u.id, nome: u.nome, negocio_nome: u.negocio_nome } });
-  const { periodo, data } = lerPeriodo(req.query, 'dia');
-  const { ini, fim } = intervalo(periodo, data);
+  const { periodo, data, ate } = lerPeriodo(req.query, 'dia');
+  const { ini, fim } = intervalo(periodo, data, ate);
   res.json({ vinculado: true, loja: { id: u.id, nome: u.nome, negocio_nome: u.negocio_nome }, periodo, ini, fim, hoje: hojeBrasilia(), ...montar(u.id, ini, fim), comparado: await comComparado(u, ini, fim), anterior: await vendedoresAnterior(u, periodo, ini, fim).catch(() => null) });
 });
 

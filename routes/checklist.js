@@ -113,7 +113,15 @@ function paraHoraBrasilia(sqlUtc) {
   return new Date(d.getTime() + FUSO * 3600000).toISOString().slice(11, 16);
 }
 // Intervalo do período que contém "data": dia, semana (segunda a domingo) ou mês
-function intervalo(periodo, data) {
+// periodo: dia | semana | mes | livre (livre = de "data" até "ate", no máximo 1 ano)
+const PERIODOS = ['dia', 'semana', 'mes', 'livre'];
+function intervalo(periodo, data, ate) {
+  if (periodo === 'livre') {
+    let fim = dataValida(ate) && ate >= data ? ate : data;
+    const max = somaDias(data, 365);
+    if (fim > max) fim = max;
+    return { ini: data, fim };
+  }
   if (periodo === 'semana') {
     const dow = (new Date(data + 'T12:00:00Z').getUTCDay() + 6) % 7; // 0 = segunda
     const ini = somaDias(data, -dow);
@@ -304,9 +312,9 @@ lojista.put('/hoje', (req, res) => {
 
 // Histórico da própria loja: ?periodo=dia|semana|mes&data=YYYY-MM-DD
 lojista.get('/relatorio', (req, res) => {
-  const periodo = ['dia', 'semana', 'mes'].includes(req.query.periodo) ? req.query.periodo : 'semana';
+  const periodo = PERIODOS.includes(req.query.periodo) ? req.query.periodo : 'semana';
   const data = dataValida(req.query.data) ? req.query.data : hojeBrasilia();
-  const { ini, fim } = intervalo(periodo, data);
+  const { ini, fim } = intervalo(periodo, data, req.query.ate);
   const u = db.prepare('SELECT id, nome, negocio_nome, checklist_desde FROM usuarios WHERE id = ?').get(req.usuarioId);
   res.json({ periodo, ini, fim, hoje: hojeBrasilia(), loja: resumo([u], ini, fim)[0] });
 });
@@ -417,9 +425,9 @@ admin.delete('/usuarios/:id', (req, res) => {
 
 // Relatório de todas as lojas com checklist: ?periodo=dia|semana|mes&data=YYYY-MM-DD
 admin.get('/relatorio', (req, res) => {
-  const periodo = ['dia', 'semana', 'mes'].includes(req.query.periodo) ? req.query.periodo : 'dia';
+  const periodo = PERIODOS.includes(req.query.periodo) ? req.query.periodo : 'dia';
   const data = dataValida(req.query.data) ? req.query.data : hojeBrasilia();
-  const { ini, fim } = intervalo(periodo, data);
+  const { ini, fim } = intervalo(periodo, data, req.query.ate);
   res.json({ periodo, ini, fim, hoje: hojeBrasilia(), total: TOTAL, lojas: resumo(lojasAtivas(), ini, fim) });
 });
 
@@ -472,4 +480,4 @@ function apagarDoCliente(usuarioId) {
   try { db.prepare('DELETE FROM orbitta_dia WHERE usuario_id = ?').run(usuarioId); db.prepare('DELETE FROM orbitta_conversas WHERE usuario_id = ?').run(usuarioId); } catch (e) { /* tabela ainda não existe */ }
 }
 
-module.exports = { lojista, admin, TURNOS, ITEM_POR_ID, TOTAL, resumo, lojasAtivas, hojeBrasilia, somaDias, apagarDoCliente, intervalo, dataValida, diasEntre };
+module.exports = { lojista, admin, TURNOS, ITEM_POR_ID, TOTAL, resumo, lojasAtivas, hojeBrasilia, somaDias, apagarDoCliente, intervalo, PERIODOS, dataValida, diasEntre };

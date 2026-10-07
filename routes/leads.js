@@ -127,8 +127,8 @@ function leadsDoPeriodo(usuarioId, ini, fim) {
   return db.prepare(`SELECT ${CAMPOS} FROM leads WHERE usuario_id = ? AND data >= ? AND data <= ? ORDER BY data DESC, id DESC`).all(usuarioId, ini, fim);
 }
 
-function relatorioDe(usuarioId, periodo, data) {
-  const { ini, fim } = intervalo(periodo, data);
+function relatorioDe(usuarioId, periodo, data, ate) {
+  const { ini, fim } = intervalo(periodo, data, ate);
   const lista = leadsDoPeriodo(usuarioId, ini, fim);
   const porDia = new Map(diasEntre(ini, fim).map((d) => [d, []]));
   lista.forEach((l) => { if (porDia.has(l.data)) porDia.get(l.data).push(l); });
@@ -140,7 +140,8 @@ function relatorioDe(usuarioId, periodo, data) {
 
 function lerPeriodo(q) {
   return {
-    periodo: ['dia', 'semana', 'mes'].includes(q.periodo) ? q.periodo : 'dia',
+    periodo: ['dia', 'semana', 'mes', 'livre'].includes(q.periodo) ? q.periodo : 'dia',
+    ate: dataValida(q.ate) ? q.ate : null,
     data: dataValida(q.data) ? q.data : hojeBrasilia(),
   };
 }
@@ -259,8 +260,8 @@ lojista.get('/reativar', (req, res) => {
 });
 
 lojista.get('/relatorio', (req, res) => {
-  const { periodo, data } = lerPeriodo({ periodo: req.query.periodo || 'semana', data: req.query.data });
-  res.json(relatorioDe(req.usuarioId, periodo, data));
+  const { periodo, data, ate } = lerPeriodo({ periodo: req.query.periodo || 'semana', data: req.query.data, ate: req.query.ate });
+  res.json(relatorioDe(req.usuarioId, periodo, data, ate));
 });
 
 // ---------------- admin e controle ----------------
@@ -268,8 +269,8 @@ const admin = express.Router();
 
 // Todas as lojas com checklist ligado, com os totais do período
 admin.get('/relatorio', (req, res) => {
-  const { periodo, data } = lerPeriodo(req.query);
-  const { ini, fim } = intervalo(periodo, data);
+  const { periodo, data, ate } = lerPeriodo(req.query);
+  const { ini, fim } = intervalo(periodo, data, ate);
   const lojas = db.prepare(`SELECT id, nome, negocio_nome FROM usuarios
     WHERE is_admin = 0 AND (checklist_ativo = 1 OR id IN (SELECT DISTINCT usuario_id FROM leads WHERE data >= ? AND data <= ?))
       AND cargo IN ('lojista', 'checklist') ORDER BY COALESCE(negocio_nome, nome)`).all(ini, fim);
@@ -282,8 +283,8 @@ admin.get('/relatorio', (req, res) => {
 admin.get('/loja/:id', (req, res) => {
   const u = db.prepare('SELECT id, nome, negocio_nome FROM usuarios WHERE id = ?').get(req.params.id);
   if (!u) return res.status(404).json({ erro: 'Loja não encontrada.' });
-  const { periodo, data } = lerPeriodo(req.query);
-  const rel = relatorioDe(u.id, periodo, data);
+  const { periodo, data, ate } = lerPeriodo(req.query);
+  const rel = relatorioDe(u.id, periodo, data, ate);
   const envios = db.prepare('SELECT data, telefone, contato, vendedor, origem, modelo, criado_em FROM lead_envios WHERE usuario_id = ? AND data >= ? AND data <= ? ORDER BY id DESC LIMIT 300').all(u.id, rel.ini, rel.fim);
   res.json({ loja: u, ...rel, leads: leadsDoPeriodo(u.id, rel.ini, rel.fim), envios });
 });
