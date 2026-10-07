@@ -466,6 +466,7 @@ function apagarDoCliente(usuarioId) {
   db.prepare('DELETE FROM checklist_arquivos WHERE usuario_id = ?').run(usuarioId);
   db.prepare('DELETE FROM checklist_respostas WHERE usuario_id = ?').run(usuarioId);
   db.prepare('DELETE FROM checklist_dias WHERE usuario_id = ?').run(usuarioId);
+  try { db.prepare('DELETE FROM passkeys WHERE usuario_id = ?').run(usuarioId); } catch (e) { /* tabela ainda não existe */ }
 }
 
 module.exports = { lojista, admin, TURNOS, ITEM_POR_ID, TOTAL, resumo, lojasAtivas, hojeBrasilia, somaDias, apagarDoCliente };

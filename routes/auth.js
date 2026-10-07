@@ -96,6 +96,113 @@ router.post('/login', (req, res) => {
   res.json({ token, usuario: paraJson(usuario) });
 });
 
+// ---------------- Face ID / digital (passkeys) ----------------
+const passkey = require('../lib/passkey');
+const RP_NOME = 'Flow Solution';
+
+function tokenDesafio(dados) { return jwt.sign({ ...dados, pk: 1 }, process.env.JWT_SECRET, { expiresIn: '5m' }); }
+function lerDesafio(token, tipo) {
+  try {
+    const d = jwt.verify(String(token || ''), process.env.JWT_SECRET);
+    if (d.pk === 1 && d.tipo === tipo) return d;
+  } catch (e) { /* expirado ou inválido */ }
+  return null;
+}
+function nomeAparelho(ua) {
+  ua = String(ua || '');
+  if (/iPhone/.test(ua)) return 'iPhone';
+  if (/iPad/.test(ua)) return 'iPad';
+  if (/Android/.test(ua)) { const m = ua.match(/Android[^;]*;\s*([^;)]+?)(?:\sBuild|\))/); return m ? m[1].trim().slice(0, 40) : 'Android'; }
+  if (/Macintosh/.test(ua)) return 'Mac';
+  if (/Windows/.test(ua)) return 'Windows';
+  return 'Aparelho';
+}
+
+// 1) Cadastro: pede as opções pro navegador criar a chave (precisa estar logado)
+router.post('/passkey/cadastro/opcoes', exigirLogin, (req, res) => {
+  const rpId = String((req.body || {}).rpId || '').toLowerCase();
+  if (!passkey.rpIdValido(rpId)) return res.status(400).json({ erro: 'Domínio inválido.' });
+  const u = db.prepare('SELECT id, nome, email FROM usuarios WHERE id = ?').get(req.usuarioId);
+  if (!u) return res.status(404).json({ erro: 'Usuário não encontrado.' });
+  const desafio = passkey.novoDesafio();
+  const existentes = db.prepare('SELECT credential_id FROM passkeys WHERE usuario_id = ? AND rp_id = ?').all(u.id, rpId);
+  res.json({
+    token: tokenDesafio({ tipo: 'cadastro', d: desafio, rp: rpId, uid: u.id }),
+    publicKey: {
+      challenge: desafio,
+      rp: { name: RP_NOME, id: rpId },
+      user: { id: passkey.b64url(Buffer.from('fs-' + u.id)), name: u.email, displayName: u.nome || u.email },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -8 }, { type: 'public-key', alg: -257 }],
+      authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'required', requireResidentKey: true },
+      excludeCredentials: existentes.map((e) => ({ type: 'public-key', id: e.credential_id })),
+      attestation: 'none',
+      timeout: 120000,
+    },
+  });
+});
+
+// 2) Cadastro: confere e guarda a chave pública
+router.post('/passkey/cadastro', exigirLogin, (req, res) => {
+  const b = req.body || {};
+  const d = lerDesafio(b.token, 'cadastro');
+  if (!d || d.uid !== req.usuarioId) return res.status(400).json({ erro: 'O tempo acabou. Tente de novo.' });
+  try {
+    const r = passkey.verificarCadastro({ credencial: b.credencial, desafio: d.d, rpId: d.rp });
+    db.prepare('INSERT INTO passkeys (usuario_id, credential_id, chave_publica, alg, contador, rp_id, aparelho) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(req.usuarioId, r.credId, JSON.stringify(r.jwk), r.alg, r.contador, d.rp, nomeAparelho(req.get('user-agent')));
+    res.json({ ok: true });
+  } catch (e) {
+    if (String(e.message).includes('UNIQUE')) return res.status(409).json({ erro: 'Esse aparelho já está cadastrado.' });
+    res.status(400).json({ erro: e.message || 'Não foi possível cadastrar.' });
+  }
+});
+
+// 3) Login: pede o desafio (não precisa estar logado)
+router.post('/passkey/login/opcoes', (req, res) => {
+  const rpId = String((req.body || {}).rpId || '').toLowerCase();
+  if (!passkey.rpIdValido(rpId)) return res.status(400).json({ erro: 'Domínio inválido.' });
+  const desafio = passkey.novoDesafio();
+  res.json({
+    token: tokenDesafio({ tipo: 'login', d: desafio, rp: rpId }),
+    publicKey: { challenge: desafio, rpId, userVerification: 'required', allowCredentials: [], timeout: 120000 },
+  });
+});
+
+// 4) Login: confere a assinatura do aparelho e devolve a sessão
+router.post('/passkey/login', (req, res) => {
+  const b = req.body || {};
+  const d = lerDesafio(b.token, 'login');
+  if (!d) return res.status(400).json({ erro: 'O tempo acabou. Tente de novo.' });
+  const credId = String((b.credencial || {}).id || '');
+  const chave = db.prepare('SELECT * FROM passkeys WHERE credential_id = ?').get(credId);
+  if (!chave || chave.rp_id !== d.rp) return res.status(401).json({ erro: 'Esse rosto/digital não está cadastrado aqui. Entre com e-mail e senha e cadastre de novo.' });
+  try {
+    const r = passkey.verificarLogin({ credencial: b.credencial, desafio: d.d, chave });
+    db.prepare("UPDATE passkeys SET contador = ?, usado_em = datetime('now') WHERE id = ?").run(r.contador, chave.id);
+  } catch (e) {
+    return res.status(401).json({ erro: e.message || 'Não foi possível confirmar.' });
+  }
+  const usuario = db.prepare('SELECT * FROM usuarios WHERE id = ?').get(chave.usuario_id);
+  if (!usuario) return res.status(401).json({ erro: 'Conta não encontrada.' });
+  const deveSerAdmin = ehEmailAdmin(usuario.email) ? 1 : 0;
+  if (usuario.is_admin !== deveSerAdmin) {
+    db.prepare('UPDATE usuarios SET is_admin = ? WHERE id = ?').run(deveSerAdmin, usuario.id);
+    usuario.is_admin = deveSerAdmin;
+  }
+  db.prepare("UPDATE usuarios SET ultimo_acesso = datetime('now') WHERE id = ?").run(usuario.id);
+  res.json({ token: gerarToken(usuario.id), usuario: paraJson(usuario) });
+});
+
+// Lista e remove os aparelhos cadastrados da própria conta
+router.get('/passkeys', exigirLogin, (req, res) => {
+  res.json({ passkeys: db.prepare('SELECT id, aparelho, rp_id, criado_em, usado_em FROM passkeys WHERE usuario_id = ? ORDER BY id DESC').all(req.usuarioId) });
+});
+router.delete('/passkeys/:id', exigirLogin, (req, res) => {
+  const r = db.prepare('DELETE FROM passkeys WHERE id = ? AND usuario_id = ?').run(req.params.id, req.usuarioId);
+  if (!r.changes) return res.status(404).json({ erro: 'Aparelho não encontrado.' });
+  res.json({ ok: true });
+});
+
 // Sinal de "estou online" enviado pelo painel de tempos em tempos (o exigirLogin já grava o horário)
 router.post('/ping', exigirLogin, (req, res) => res.json({ ok: true }));
 

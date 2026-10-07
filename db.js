@@ -311,6 +311,23 @@ try { db.exec(`ALTER TABLE usuarios ADD COLUMN agenda_ics_token TEXT`); } catch 
 // Atualizado no login e a cada chamada logada (no máximo 1x por minuto).
 try { db.exec(`ALTER TABLE usuarios ADD COLUMN ultimo_acesso TEXT`); } catch (e) { /* já existe */ }
 
+// Chaves de acesso (Face ID / digital). Só a chave PÚBLICA fica aqui; o rosto nunca sai do celular.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS passkeys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    usuario_id INTEGER NOT NULL,
+    credential_id TEXT NOT NULL UNIQUE,
+    chave_publica TEXT NOT NULL,
+    alg INTEGER NOT NULL,
+    contador INTEGER NOT NULL DEFAULT 0,
+    rp_id TEXT NOT NULL,
+    aparelho TEXT,
+    criado_em TEXT DEFAULT (datetime('now')),
+    usado_em TEXT
+  )
+`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_passkeys_usuario ON passkeys(usuario_id)`);
+
 // Cada horário marcado. data = 'YYYY-MM-DD' e hora = 'HH:MM' no horário de Brasília.
 // zap_status / gcal_status: o que o robô conseguiu fazer (enviado, manual, erro / criado, sem_google, erro)
 db.exec(`
