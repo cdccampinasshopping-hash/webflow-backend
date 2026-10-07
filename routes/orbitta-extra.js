@@ -28,7 +28,7 @@ for (const col of ['ultimo_de TEXT', 'ultimo_em TEXT', 'checada_msg TEXT', 'aler
 try { db.exec(`ALTER TABLE usuarios ADD COLUMN orbitta_alerta TEXT`); } catch (e) { /* já existe */ }
 db.exec(`CREATE TABLE IF NOT EXISTS orbitta_resumos (usuario_id INTEGER NOT NULL, data TEXT NOT NULL, enviado_em TEXT DEFAULT (datetime('now')), PRIMARY KEY (usuario_id, data))`);
 
-const PADRAO = { minutos: 5, emails: '', whatsapp: '', alerta: true, resumo: true, inicio: 8, fim: 22 };
+const PADRAO = { minutos: 5, emails: '', whatsapp: '', alerta: true, resumo: true, inicio: 8, fim: 22, lembrete: true, lembrete_hora: 18 };
 function configDe(u) {
   let c = {};
   try { c = JSON.parse(u.orbitta_alerta || '{}') || {}; } catch (e) { c = {}; }
@@ -379,6 +379,112 @@ async function enviarFechamentoVendedores(u, data, teste) {
   return out;
 }
 
+// ---------------- 7) Lembrete de visitas na véspera ----------------
+// Às 18h (configurável), cada vendedor recebe a lista de quem tem visita amanhã pra confirmar.
+db.exec(`CREATE TABLE IF NOT EXISTS visitas_lembretes (usuario_id INTEGER NOT NULL, data TEXT NOT NULL, enviado_em TEXT DEFAULT (datetime('now')), PRIMARY KEY (usuario_id, data))`);
+const vendedorDaConversa = db.prepare(`SELECT vendedor_id FROM orbitta_conversas WHERE usuario_id = ? AND conversa_id = ? AND vendedor_id IS NOT NULL ORDER BY data DESC LIMIT 1`);
+function primeiroNome(n) { return String(n || '').trim().split(/\s+/)[0] || ''; }
+function textoConfirmar(a, vendedor, loja) {
+  return `Oi${primeiroNome(a.cliente) ? ', ' + primeiroNome(a.cliente) : ''}! Aqui é ${primeiroNome(vendedor) || 'a equipe'}, da ${loja}. Passando pra confirmar sua visita amanhã às ${a.hora}. Posso contar com você?`;
+}
+// Visitas de amanhã agrupadas por vendedor (quem não tem vendedor fica em "Sem vendedor")
+async function visitasDeAmanha(u) {
+  const amanha = somaDias(hojeBrasilia(), 1);
+  const lista = await agendamentosDe(u, amanha);
+  const grupos = new Map();
+  for (const a of lista) {
+    if (['cancelled', 'canceled', 'cancelado'].includes(String(a.situacao || a.status || '').toLowerCase())) continue;
+    let vid = null; try { vid = a.conversa_id ? ((vendedorDaConversa.get(u.id, a.conversa_id) || {}).vendedor_id || null) : null; } catch (e) { /* sem conversa */ }
+    const k = vid || '';
+    if (!grupos.has(k)) grupos.set(k, { membro_id: vid, nome: vid ? ((nomeMembro.get(vid) || {}).nome || 'Vendedor') : 'Sem vendedor', visitas: [] });
+    grupos.get(k).visitas.push(a);
+  }
+  return { data: amanha, total: lista.length, grupos: [...grupos.values()].sort((a, b) => b.visitas.length - a.visitas.length) };
+}
+function htmlVisitas(titulo, sub, visitas, vendedor, loja) {
+  const linhas = visitas.map((a) => {
+    const tel = whatsapp.normalizarTelefone(a.telefone);
+    const link = tel ? `https://wa.me/${tel}?text=${encodeURIComponent(textoConfirmar(a, vendedor, loja))}` : null;
+    return `<tr><td style="padding:9px 6px;border-bottom:1px solid #E3E6EC;font-weight:700;white-space:nowrap">${esc(a.hora || '')}</td>
+      <td style="padding:9px 6px;border-bottom:1px solid #E3E6EC"><b>${esc(a.cliente || a.telefone || '')}</b><div style="color:#6B7690;font-size:12px">${esc(a.telefone || '')}${a.situacao === 'pending' ? ' · a confirmar' : ''}</div></td>
+      <td style="padding:9px 6px;border-bottom:1px solid #E3E6EC;text-align:right">${link ? `<a href="${link}" style="background:#128C4B;color:#fff;padding:7px 11px;border-radius:7px;text-decoration:none;font-weight:700;font-size:13px">Confirmar</a>` : ''}</td></tr>`;
+  }).join('');
+  return `<!doctype html><html><body style="margin:0;background:#F4F5F8;font-family:Arial,sans-serif;color:#151B26">
+  <div style="max-width:560px;margin:0 auto;padding:24px 16px">
+    <h2 style="margin:0 0 2px">${esc(titulo)}</h2><p style="margin:0 0 16px;color:#4A5873">${esc(sub)}</p>
+    <table style="width:100%;border-collapse:collapse;background:#fff;border-radius:10px">${linhas}</table>
+    <p style="margin:14px 0 0;color:#4A5873;font-size:13px">Toque em <b>Confirmar</b> pra abrir o WhatsApp com a mensagem pronta. Confirmar na véspera derruba as faltas.</p>
+  </div></body></html>`;
+}
+async function enviarLembreteVisitas(u, teste) {
+  const loja = u.negocio_nome || u.nome;
+  const v = await visitasDeAmanha(u);
+  const out = { data: v.data, total: v.total, vendedores: [], celulares: 0, gerente: [] };
+  if (!v.total) return out;
+  const contatos = new Map(db.prepare('SELECT membro_id, whatsapp, email FROM vendedor_contatos WHERE usuario_id = ?').all(u.id).map((c) => [c.membro_id, c]));
+  const modelo = process.env.WHATSAPP_TEMPLATE_VISITAS;
+  const dia = dataBr(v.data).slice(0, 5);
+  for (const g of v.grupos) {
+    const ct = g.membro_id ? contatos.get(g.membro_id) : null;
+    if (!ct) continue;
+    const r = { nome: g.nome, visitas: g.visitas.length, email: null, whatsapp: null };
+    if (ct.email) {
+      try { await enviarEmail({ para: [ct.email], assunto: `📅 ${g.visitas.length} visita(s) amanhã pra confirmar · ${loja}${teste ? ' (teste)' : ''}`, html: htmlVisitas(`${primeiroNome(g.nome)}, suas visitas de amanhã`, `${loja} · ${dataBr(v.data)}`, g.visitas, g.nome, loja) }); r.email = 'enviado'; }
+      catch (e) { r.email = 'erro'; }
+    }
+    // Modelo aprovado na Meta: {{1}} vendedor, {{2}} loja, {{3}} lista
+    if (ct.whatsapp && modelo) {
+      const lista = g.visitas.map((a) => `${a.hora} ${primeiroNome(a.cliente) || a.telefone}`).join(', ');
+      r.whatsapp = (await whatsapp.enviarModelo(ct.whatsapp, modelo, [primeiroNome(g.nome), loja, `Amanhã (${dia}): ${lista}`])).status;
+    }
+    out.vendedores.push(r);
+  }
+  // Gerente recebe a lista inteira, e quem tem avisos ligados recebe no celular
+  const c = configDe(u);
+  const para = emailsDe(c);
+  if (para.length) {
+    try { await enviarEmail({ para, assunto: `📅 ${v.total} visita(s) amanhã · ${loja}${teste ? ' (teste)' : ''}`, html: htmlVisitas(`Visitas de amanhã · ${loja}`, `${dataBr(v.data)} · ${v.grupos.map((g) => `${primeiroNome(g.nome)} ${g.visitas.length}`).join(' · ')}`, v.grupos.flatMap((g) => g.visitas).sort((a, b) => String(a.hora).localeCompare(String(b.hora))), null, loja) }); out.gerente = para; }
+    catch (e) { /* segue */ }
+  }
+  try {
+    out.celulares = await push.enviarPara(destinosPush(u), { titulo: `📅 ${v.total} visita${v.total > 1 ? 's' : ''} amanhã · ${loja}`,
+      texto: v.grupos.map((g) => `${g.nome}: ${g.visitas.length}`).join(' · ') + ' — confirme hoje pelo painel', url: '/webflow.html', tag: 'visitas-' + u.id });
+  } catch (e) { /* segue */ }
+  return out;
+}
+async function rodadaLembretes() {
+  if (!orbitta.configurado()) return;
+  const h = horaBrasilia(), hoje = hojeBrasilia();
+  for (const u of lojasVinculadas()) {
+    const c = configDe(u);
+    if (!c.lembrete || h < c.lembrete_hora || h >= 23) continue;
+    if (db.prepare('SELECT 1 FROM visitas_lembretes WHERE usuario_id = ? AND data = ?').get(u.id, hoje)) continue;
+    try { await enviarLembreteVisitas(u); db.prepare('INSERT OR IGNORE INTO visitas_lembretes (usuario_id, data) VALUES (?, ?)').run(u.id, hoje); }
+    catch (e) { console.error('Lembrete visitas:', e.message); }
+  }
+}
+
+// ---------------- 8) Nota da loja (0 a 10) ----------------
+// Junta checklist feito, tempo da 1ª resposta e conversão (comparada com a melhor loja da rede).
+// Pesos: conversão 40%, resposta 35%, checklist 25%. Se faltar alguma parte, as outras dividem o peso.
+function notasDaRede(linhas) {
+  const conv = (l) => (l.leads.atual ? l.vendas.atual / l.leads.atual : null);
+  const ref = Math.max(0.10, ...linhas.map(conv).filter((x) => x != null));
+  for (const l of linhas) {
+    const partes = {};
+    const cv = conv(l); if (cv != null) partes.conversao = Math.min(1, cv / ref);
+    const r = l.primeira_resposta_seg; if (r != null) partes.resposta = r <= 300 ? 1 : r >= 1800 ? 0 : 1 - (r - 300) / 1500;
+    const ckl = l.checklist; const ckTx = ckl && ckl.esperadas ? ckl.feitas / ckl.esperadas : ckl && ckl.hoje && ckl.hoje.total ? ckl.hoje.feitas / ckl.hoje.total : null;
+    if (ckTx != null) partes.checklist = Math.min(1, ckTx);
+    const pesos = { conversao: 0.40, resposta: 0.35, checklist: 0.25 };
+    const usados = Object.keys(partes);
+    const somaPeso = usados.reduce((t, k) => t + pesos[k], 0);
+    l.nota = usados.length ? Math.round(usados.reduce((t, k) => t + partes[k] * pesos[k], 0) / somaPeso * 100) / 10 : null;
+    l.nota_partes = Object.fromEntries(usados.map((k) => [k, Math.round(partes[k] * 100) / 10]));
+  }
+  return linhas;
+}
+
 function iniciarExtrasOrbitta() {
   if (!orbitta.configurado()) return;
   let rodando = false;
@@ -387,6 +493,7 @@ function iniciarExtrasOrbitta() {
   setTimeout(alertas, 90 * 1000);
   setInterval(alertas, 60 * 1000);
   setInterval(() => rodadaResumo().catch((e) => console.error('Orbitta resumo:', e.message)), 10 * 60 * 1000);
+  setInterval(() => rodadaLembretes().catch((e) => console.error('Lembrete visitas:', e.message)), 10 * 60 * 1000);
 }
 
 // ---------------- 4) Visitas pra confirmar ----------------
@@ -511,6 +618,11 @@ lojista.post('/fechamento/enviar', async (req, res) => {
   try { const enviados = await enviarFechamentoVendedores(u, hojeBrasilia(), true); res.json({ ok: true, enviados }); }
   catch (e) { res.status(502).json({ erro: e.message }); }
 });
+lojista.post('/visitas/lembrete', async (req, res) => {
+  const u = lojaDoUsuario(req, res); if (!u) return;
+  try { res.json({ ok: true, ...(await enviarLembreteVisitas(u, true)) }); }
+  catch (e) { res.status(502).json({ erro: e.message }); }
+});
 lojista.get('/evolucao', async (req, res) => {
   const u = lojaDoUsuario(req, res); if (!u) return;
   try { res.json({ vinculado: true, ...(await evolucao(u, 30)) }); }
@@ -535,6 +647,7 @@ admin.get('/rede', async (req, res) => {
     let checklist = null; try { const r = ck.resumo([u], ini, fim)[0]; checklist = { esperadas: r.esperadas, feitas: r.feitas, hoje: (r.dias.find((d) => d.em_andamento) || null) }; } catch (e) { /* nada */ }
     return { id: u.id, nome: u.negocio_nome || u.nome, sem_orbitta: true, checklist };
   });
+  notasDaRede(linhas);
   res.json({ periodo, ini, fim, hoje: hojeBrasilia(), lojas: linhas, so_checklist: soChecklist, configurado: orbitta.configurado() });
 });
 admin.get('/loja/:id/sem-resposta', (req, res) => {
@@ -561,6 +674,8 @@ admin.patch('/alerta/:id', (req, res) => {
   if (b.resumo !== undefined) c.resumo = !!b.resumo;
   if (b.inicio !== undefined) c.inicio = Math.min(23, Math.max(0, Math.round(Number(b.inicio) || 8)));
   if (b.fim !== undefined) c.fim = Math.min(24, Math.max(1, Math.round(Number(b.fim) || 22)));
+  if (b.lembrete !== undefined) c.lembrete = !!b.lembrete;
+  if (b.lembrete_hora !== undefined) c.lembrete_hora = Math.min(22, Math.max(8, Math.round(Number(b.lembrete_hora) || 18)));
   db.prepare('UPDATE usuarios SET orbitta_alerta = ? WHERE id = ?').run(JSON.stringify(c), u.id);
   res.json({ alerta: c });
 });
@@ -619,4 +734,4 @@ lojas.put('/alertas', (req, res) => {
   res.json({ silenciadas: off });
 });
 
-module.exports = { fechamentoVendedores, enviarFechamentoVendedores, lojas, lojista, admin, iniciarExtrasOrbitta, verificarRespostas, semResposta, rodadaAlertas, rodadaResumo, htmlResumo, dadosDoDia, evolucao, agendamentosDe, linhaRede, configDe };
+module.exports = { notasDaRede, visitasDeAmanha, enviarLembreteVisitas, fechamentoVendedores, enviarFechamentoVendedores, lojas, lojista, admin, iniciarExtrasOrbitta, verificarRespostas, semResposta, rodadaAlertas, rodadaResumo, htmlResumo, dadosDoDia, evolucao, agendamentosDe, linhaRede, configDe };
