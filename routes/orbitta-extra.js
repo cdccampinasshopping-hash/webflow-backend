@@ -659,7 +659,8 @@ admin.get('/rede', async (req, res) => {
     return { id: u.id, nome: u.negocio_nome || u.nome, sem_orbitta: true, checklist };
   });
   notasDaRede(linhas);
-  res.json({ periodo, ini, fim, hoje: hojeBrasilia(), lojas: linhas, so_checklist: soChecklist, configurado: orbitta.configurado() });
+  const ve = (l) => !req.redeLojas || req.redeLojas.has(Number(l.id));
+  res.json({ periodo, ini, fim, hoje: hojeBrasilia(), lojas: linhas.filter(ve), so_checklist: soChecklist.filter(ve), configurado: orbitta.configurado() });
 });
 admin.get('/loja/:id/sem-resposta', (req, res) => {
   const u = lojaPorId(req.params.id); if (!u || !ob.vinculoDe(u)) return res.json({ vinculado: false, lista: [] });

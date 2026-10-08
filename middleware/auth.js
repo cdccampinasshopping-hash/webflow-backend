@@ -52,7 +52,14 @@ function exigirControle(req, res, next) {
   const leituraRede = req.method === 'GET' && (
     (req.baseUrl === '/api/admin/orbitta' && LEITURA_REDE.some((r) => r.test(req.path)))
     || (req.baseUrl === '/api/admin/leads' && /^\/loja\/\d+\/?$/.test(req.path)));
-  if (usuario && usuario.cargo === 'checklist' && leituraRede) { req.ehAdmin = false; return next(); }
+  // Rede de lojas virou permissão de cargo (tipo tag do Discord): quem tem "Ver Rede de lojas" vê só as lojas do cargo
+  if (usuario && !usuario.is_admin && leituraRede && permissoes.tem(req.usuarioId, 'rede') && !permissoes.tem(req.usuarioId, 'relatorios') && usuario.cargo !== 'controle') {
+    req.ehAdmin = false;
+    req.redeLojas = new Set([Number(req.usuarioId), ...permissoes.lojasPor(req.usuarioId, 'rede').map((l) => l.id)]);
+    const m = req.path.match(/^\/loja\/(\d+)/);
+    if (m && !req.redeLojas.has(Number(m[1]))) return res.status(403).json({ erro: 'Seu cargo não dá acesso a essa loja.' });
+    return next();
+  }
   if (!usuario || (!usuario.is_admin && usuario.cargo !== 'controle' && !permissoes.tem(req.usuarioId, 'relatorios'))) {
     return res.status(403).json({ erro: 'Essa conta não tem acesso aos relatórios do checklist.' });
   }
