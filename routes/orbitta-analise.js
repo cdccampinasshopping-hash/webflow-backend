@@ -93,7 +93,7 @@ async function _analiseLoja(u, hoje) {
   const pega = (id) => {
     if (!porVend.has(id)) {
       const n = id ? nomeDe.get(id) : null;
-      porVend.set(id, { id, nome: (n && n.nome) || (id ? 'Vendedor ' + String(id).slice(0, 4) : 'Sem vendedor'), novos: 0, reativacoes: 0, agendamentos: 0, ag_hoje: 0, ag_outros: 0 });
+      porVend.set(id, { id, nome: (n && n.nome) || (id ? 'Vendedor ' + String(id).slice(0, 4) : 'Sem vendedor'), conversas: 0, novos: 0, reativacoes: 0, agendamentos: 0, ag_hoje: 0, ag_outros: 0 });
     }
     return porVend.get(id);
   };
@@ -113,10 +113,21 @@ async function _analiseLoja(u, hoje) {
   // o painel usa o vendedor do último agendamento do cliente, então um cliente antigo que voltou
   // aparecia no nome de quem já saiu da loja (ex.: vendedor desligado). Esses ficam de fora da lista por vendedor
   // (continuam contando nos totais da loja).
+  // "Conversas atendidas" vem pronta do Orbitta por vendedor (é o número exato de quem atendeu no dia)
   let equipe = null;
-  try { const eq = await ob.equipeAoVivo(u, ontem, ontem); if (eq && eq.atual) equipe = new Set(Object.keys(eq.atual.membros || {})); } catch (e) { /* sem filtro */ }
+  try {
+    const eq = await ob.equipeAoVivo(u, ontem, ontem);
+    if (eq && eq.atual) {
+      equipe = new Set(Object.keys(eq.atual.membros || {}));
+      for (const [id, mb] of Object.entries(eq.atual.membros || {})) {
+        if (!mb.conversas && !porVend.has(id)) continue;
+        const x = pega(id); x.conversas = mb.conversas || 0;
+        if (mb.nome && /^Vendedor /.test(x.nome)) x.nome = mb.nome;
+      }
+    }
+  } catch (e) { /* sem filtro */ }
   const vendedores = [...porVend.values()].filter((x) => (x.id ? (!equipe || equipe.has(x.id)) : x.agendamentos))
-    .sort((a, b) => (b.novos + b.reativacoes) - (a.novos + a.reativacoes) || b.agendamentos - a.agendamentos);
+    .sort((a, b) => b.conversas - a.conversas || b.agendamentos - a.agendamentos || (b.novos + b.reativacoes) - (a.novos + a.reativacoes));
 
   const g = (k) => (comparado && comparado[k] ? comparado[k].atual : null);
   return {
