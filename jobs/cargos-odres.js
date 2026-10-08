@@ -116,4 +116,26 @@ function ativarPendentesComLojas() {
   return ligou;
 }
 
-module.exports = { criarCargosOdres, liberarAvaliacaoRegionalA, criarCargosOdresDemais, ativarRegionalPendente, ativarPendentesComLojas };
+// 08/10/2026 (pedido do Mateus): a loja "Orvalho 1" entra na rede Odres 1, pra o André (Odres 1 Regional A)
+// controlar ela e os relatórios dela junto com as outras. Roda uma vez; se a conta ou o cargo não existirem, tenta no próximo início.
+function ligarOrvalho1NaOdres1() {
+  const ID = 'orvalho-1-na-odres-1-2026-10-08';
+  if (db.prepare('SELECT 1 FROM seeds_feitos WHERE id = ?').get(ID)) return;
+  const contas = db.prepare(`SELECT id, nome, negocio_nome, checklist_ativo, checklist_por_tag FROM usuarios
+    WHERE is_admin = 0 AND (lower(trim(nome)) = 'orvalho 1' OR lower(trim(COALESCE(negocio_nome, ''))) = 'orvalho 1')`).all();
+  const cargo = db.prepare("SELECT id FROM cargos_tag WHERE lower(trim(nome)) = 'odres 1'").get();
+  if (contas.length !== 1 || !cargo) { console.log(`Orvalho 1 → Odres 1: ${contas.length} conta(s) "Orvalho 1" e cargo ${cargo ? 'ok' : 'não encontrado'}; não mexi.`); return; }
+  const u = contas[0];
+  const hoje = new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 10);
+  db.transaction(() => {
+    db.prepare('INSERT OR IGNORE INTO usuario_cargos_tag (usuario_id, cargo_id) VALUES (?, ?)').run(u.id, cargo.id);
+    // Conta como loja de verdade da rede (não como quem só ganhou o checklist por causa de um cargo)
+    if (!u.checklist_ativo) db.prepare('UPDATE usuarios SET checklist_ativo = 1, checklist_desde = ?, checklist_por_tag = 0 WHERE id = ?').run(hoje, u.id);
+    else if (u.checklist_por_tag) db.prepare('UPDATE usuarios SET checklist_por_tag = 0 WHERE id = ?').run(u.id);
+    db.prepare('INSERT INTO seeds_feitos (id) VALUES (?)').run(ID);
+  })();
+  try { ativarPendentesComLojas(); } catch (e) { /* segue */ }
+  console.log(`Orvalho 1 (conta ${u.id}) entrou na Odres 1.`);
+}
+
+module.exports = { criarCargosOdres, liberarAvaliacaoRegionalA, criarCargosOdresDemais, ativarRegionalPendente, ativarPendentesComLojas, ligarOrvalho1NaOdres1 };
