@@ -153,9 +153,11 @@ async function _analiseLoja(u, hoje) {
   const ontem = somaDias(hoje, -1);
 
   // Leads de ontem (painel do Orbitta) e agendamentos marcados de ontem em diante
-  const [comparado, lista] = await Promise.all([
+  const [comparado, lista, compDia] = await Promise.all([
     ob.painelComparado(u, ontem, ontem).catch(() => null),
     listarAgendamentos(f, ontem, somaDias(hoje, JANELA_DIAS)),
+    // "Agendamentos p/ período" do Orbitta no dia seguinte (= agendamentos pra hoje/amanhã, igual ao painel de lá)
+    ob.painelComparado(u, hoje, hoje).catch(() => null),
   ]);
 
   // Lê a ficha só dos agendamentos ainda desconhecidos (uma ficha traz todos os agendamentos daquele cliente)
@@ -215,8 +217,6 @@ async function _analiseLoja(u, hoje) {
   const m = ob.montar(u.id, ontem, ontem);
   const vendDoDia = new Map();
   for (const a of ags) if (a.conversa_id && a.vendedor_id) vendDoDia.set(a.conversa_id, a.vendedor_id);
-  // Lê as conversas do dia que ainda não foram olhadas atrás de reativações (vendedor escreveu depois de 7+ dias parado)
-  await lerReativacoes(u, ontem).catch(() => {});
   // Só entra quem está na equipe do Orbitta naquele dia. O Orbitta não diz quem atendeu cada conversa;
   // o painel usa o vendedor do último agendamento do cliente, então um cliente antigo que voltou
   // aparecia no nome de quem já saiu da loja (ex.: vendedor desligado). Esses ficam de fora da lista por vendedor
@@ -268,7 +268,12 @@ async function _analiseLoja(u, hoje) {
     vinculado: true, hoje, ontem,
     leads_novos: g('leads_novos') ?? m.loja.novos,
     leads_recorrentes: g('leads_recorrentes') ?? m.loja.reativacoes,
-    agendamentos_hoje: paraHoje,
+    agendamentos_hoje: compDia && compDia.agend_periodo ? compDia.agend_periodo.atual : paraHoje,
+    // Totais da loja direto do painel do Orbitta (pra tabela por vendedor fechar com eles)
+    leads_atendidos: g('leads_atendidos'),
+    agendamentos_loja: g('agend_detectados'),
+    vendas_loja: g('vendas'),
+    valor_loja: g('valor_vendido'),
     vendedores,
     sem_vendedor: semVendedor,
     sem_vendedor_prox: porVend.has(null) ? porVend.get(null).ag_hoje : 0,
