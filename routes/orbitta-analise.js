@@ -172,6 +172,7 @@ async function _analiseLoja(u, hoje) {
     agendamentos_hoje: paraHoje,
     vendedores,
     sem_vendedor: semVendedor,
+    sem_vendedor_prox: porVend.has(null) ? porVend.get(null).ag_hoje : 0,
     reativados_total: reatTotal,
     reativados_sem_vendedor: reatSemVendedor,
     reativados_pendentes: reatPendentes,
