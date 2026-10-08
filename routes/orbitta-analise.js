@@ -109,7 +109,13 @@ async function _analiseLoja(u, hoje) {
     const x = pega(vd.id); x.novos = vd.novos || 0; x.reativacoes = vd.reativacoes || 0;
     if (vd.nome && /^Vendedor /.test(x.nome)) x.nome = vd.nome;
   }
-  const vendedores = [...porVend.values()].filter((x) => x.id || x.agendamentos)
+  // Só entra quem está na equipe do Orbitta naquele dia. O Orbitta não diz quem atendeu cada conversa;
+  // o painel usa o vendedor do último agendamento do cliente, então um cliente antigo que voltou
+  // aparecia no nome de quem já saiu da loja (ex.: vendedor desligado). Esses ficam de fora da lista por vendedor
+  // (continuam contando nos totais da loja).
+  let equipe = null;
+  try { const eq = await ob.equipeAoVivo(u, ontem, ontem); if (eq && eq.atual) equipe = new Set(Object.keys(eq.atual.membros || {})); } catch (e) { /* sem filtro */ }
+  const vendedores = [...porVend.values()].filter((x) => (x.id ? (!equipe || equipe.has(x.id)) : x.agendamentos))
     .sort((a, b) => (b.novos + b.reativacoes) - (a.novos + a.reativacoes) || b.agendamentos - a.agendamentos);
 
   const g = (k) => (comparado && comparado[k] ? comparado[k].atual : null);
