@@ -128,16 +128,74 @@ async function lerReativacoes(u, dia) {
   }
 }
 
+/* Quem mandou a mensagem: o Orbitta não diz na conversa, mas o contador de "conversas atendidas" de cada vendedor
+   sobe no minuto em que ele manda a 1ª mensagem do dia numa conversa. Tiramos uma foto da equipe a cada minuto
+   e ligamos cada reativação ao vendedor cujo contador subiu logo depois da mensagem. */
+db.exec(`CREATE TABLE IF NOT EXISTS orbitta_equipe_foto (
+  usuario_id INTEGER NOT NULL,
+  dia TEXT NOT NULL,
+  em TEXT NOT NULL,
+  membro_id TEXT NOT NULL,
+  conversas INTEGER NOT NULL,
+  PRIMARY KEY (usuario_id, em, membro_id)
+)`);
+db.exec('CREATE INDEX IF NOT EXISTS idx_orb_foto_dia ON orbitta_equipe_foto (usuario_id, dia, membro_id, em)');
+const ultimaFoto = db.prepare('SELECT conversas FROM orbitta_equipe_foto WHERE usuario_id = ? AND dia = ? AND membro_id = ? ORDER BY em DESC LIMIT 1');
+const salvarFoto = db.prepare('INSERT OR IGNORE INTO orbitta_equipe_foto (usuario_id, dia, em, membro_id, conversas) VALUES (?, ?, ?, ?, ?)');
+async function fotografarEquipe(u, dia) {
+  const v = ob.vinculoDe(u); if (!v) return;
+  const r = await ob.comLoja(u, () => orbitta.chamar('metricas_equipe', { start_date: dia, end_date: dia, ...ob.filtros(v) }));
+  const em = new Date().toISOString();
+  for (const m of r.membros || []) {
+    if (!m.membro_id) continue;
+    const n = (m.conversas_atendidas_agentes || 0) + (m.conversas_atendidas_unidades || 0);
+    const ant = ultimaFoto.get(u.id, dia, m.membro_id);
+    if (!ant || ant.conversas !== n) salvarFoto.run(u.id, dia, em, m.membro_id, n); // só guarda quando muda
+  }
+  // Fotos com mais de 10 dias não servem mais
+  db.prepare("DELETE FROM orbitta_equipe_foto WHERE usuario_id = ? AND dia < ?").run(u.id, somaDias(dia, -10));
+}
+// Momentos em que o contador de cada vendedor subiu no dia: { membro_id: [ms, ...] }
+function subidasDoDia(usuarioId, dia) {
+  const linhas = db.prepare('SELECT membro_id, em, conversas FROM orbitta_equipe_foto WHERE usuario_id = ? AND dia = ? ORDER BY membro_id, em').all(usuarioId, dia);
+  const out = {}; let ant = null;
+  for (const l of linhas) {
+    if (ant && ant.membro_id === l.membro_id && l.conversas > ant.conversas) {
+      (out[l.membro_id] = out[l.membro_id] || []).push({ em: new Date(l.em).getTime(), vezes: l.conversas - ant.conversas, desde: new Date(ant.em).getTime() });
+    }
+    ant = l;
+  }
+  return out;
+}
+// Vendedor cujo contador subiu logo depois da mensagem (entre a foto anterior e a seguinte). Só quando não há dúvida.
+function vendedorPeloContador(msgEm, subidas, usadas) {
+  const t = new Date(msgEm).getTime();
+  const cand = [];
+  for (const [id, lista] of Object.entries(subidas)) {
+    for (const s of lista) {
+      // a mensagem caiu entre a foto anterior (com folga de 1 min) e a foto que mostrou a subida (até 4 min depois)
+      if (t >= s.desde - 60000 && s.em >= t && s.em - t <= 4 * 60000 && (usadas.get(s) || 0) < s.vezes) { cand.push({ id, s, atraso: s.em - t }); break; }
+    }
+  }
+  if (!cand.length) return null;
+  cand.sort((a, b) => a.atraso - b.atraso);
+  if (cand.length > 1 && cand[1].atraso - cand[0].atraso < 60000) return null; // dois subiram juntos: não dá pra saber
+  usadas.set(cand[0].s, (usadas.get(cand[0].s) || 0) + 1);
+  return cand[0].id;
+}
+
 const semAcento = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 const PALAVRAS_FORA = new Set(['de', 'da', 'do', 'das', 'dos', 'e']);
 // Quem mandou a mensagem de reativação, entre os vendedores da equipe do dia ({ id: nome })
-function vendedorDaMensagem(texto, equipe, vendDoDia) {
+function vendedorDaMensagem(texto, equipe, vendDoDia, peloContador) {
   const t = semAcento(texto);
   const nomes = Object.entries(equipe).map(([id, nome]) => ({ id, partes: semAcento(nome).split(/\s+/).filter((p) => p.length >= 3 && !PALAVRAS_FORA.has(p)) }));
   const comParte = (p) => nomes.filter((n) => n.partes.includes(p));
   // 1) se apresentou: "sou o Nicolas", "meu nome é Lucas", "aqui é a Irys"
   const ap = t.match(/\b(?:sou\s+(?:o|a)|meu\s+nome\s+e|aqui\s+(?:quem\s+fala\s+)?e\s+(?:o|a))\s+([a-z]{3,})/);
   if (ap) { const c = comParte(ap[1]); if (c.length === 1) return c[0].id; }
+  // 2) o contador de conversas dele subiu no minuto da mensagem
+  if (peloContador && equipe[peloContador]) return peloContador;
   // 2) marcou agendamento com esse cliente no dia
   if (vendDoDia && equipe[vendDoDia]) return vendDoDia;
   // 3) um único nome da equipe aparece na mensagem
@@ -248,6 +306,7 @@ async function _analiseLoja(u, hoje) {
   let reatNaoIdent = 0, reatTotal = 0;
   const porId = new Map(vendedores.map((x) => [x.id, x]));
   for (const x of vendedores) x.reativacoes = 0;
+  const subidas = subidasDoDia(u.id, ontem), usadas = new Map();
   const eventos = db.prepare(`SELECT r.conversa_id, r.texto, r.msg_em, r.parado_dias, r.trecho,
       (SELECT c.contato FROM orbitta_conversas c WHERE c.usuario_id = r.usuario_id AND c.conversa_id = r.conversa_id AND c.contato IS NOT NULL LIMIT 1) AS contato
     FROM orbitta_reativacoes r WHERE r.usuario_id = ? AND r.dia = ? ORDER BY r.msg_em`).all(u.id, ontem);
@@ -256,7 +315,7 @@ async function _analiseLoja(u, hoje) {
   for (const ev of eventos) {
     if (contadas.has(ev.conversa_id)) continue; // um cliente conta uma vez por dia
     contadas.add(ev.conversa_id); reatTotal++;
-    const id = vendedorDaMensagem(ev.texto, nomesEquipe, vendDoDia.get(ev.conversa_id));
+    const id = vendedorDaMensagem(ev.texto, nomesEquipe, vendDoDia.get(ev.conversa_id), vendedorPeloContador(ev.msg_em, subidas, usadas));
     let trecho = null; try { trecho = ev.trecho ? JSON.parse(ev.trecho) : null; } catch (e) { /* sem trecho */ }
     reatLista.push({ conversa_id: ev.conversa_id, cliente: ev.contato || 'Cliente', vendedor_id: id, vendedor: id ? (nomesEquipe[id] || null) : null,
       em: ev.msg_em, parado_dias: ev.parado_dias, trecho: trecho || { antes: null, depois: [{ de: 'atendente', data: ev.msg_em, texto: ev.texto }] } });
@@ -344,6 +403,19 @@ function iniciarAnalise() {
   };
   setTimeout(rodar, 3 * 60 * 1000);
   setInterval(rodar, 30 * 60 * 1000);
+  // Foto da equipe a cada minuto (pra saber quem mandou cada mensagem de reativação)
+  let fotografando = false;
+  setInterval(async () => {
+    if (fotografando) return; fotografando = true;
+    try {
+      const hoje = hojeBrasilia();
+      const lista = db.prepare(`SELECT id, orbitta_vinculo FROM usuarios WHERE orbitta_vinculo IS NOT NULL AND orbitta_vinculo <> ''`).all();
+      for (const u of lista) {
+        if (!ob.vinculoDe(u)) continue;
+        await fotografarEquipe(u, hoje).catch((e) => console.error('Foto equipe Orbitta:', e.message));
+      }
+    } finally { fotografando = false; }
+  }, 60 * 1000);
 }
 
-module.exports = { lojista, lojas, iniciarAnalise, reativacoesNasMensagens, vendedorDaMensagem };
+module.exports = { lojista, lojas, iniciarAnalise, reativacoesNasMensagens, vendedorDaMensagem, vendedorPeloContador };
