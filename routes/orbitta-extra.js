@@ -559,8 +559,7 @@ async function _evolucao(u, dias) {
 // ---------------- 3) Painel da rede ----------------
 async function linhaRede(u, periodo, ini, fim) {
   // Tudo do período escolhido vem direto do Orbitta (painel + equipe); o guardado só entra se o Orbitta falhar
-  const m = await ob.montarAoVivo(u, ini, fim);
-  let comp = null; try { comp = await ob.painelComparado(u, ini, fim); } catch (e) { /* sem comparação */ }
+  const [m, comp] = await Promise.all([ob.montarAoVivo(u, ini, fim), ob.painelComparado(u, ini, fim).catch(() => null)]);
   let resp = 0, respN = 0;
   m.vendedores.forEach((v) => { if (v.primeira_resposta_seg != null && v.conversas) { resp += v.primeira_resposta_seg * v.conversas; respN += v.conversas; } });
   const respLoja = m.primeira_resposta ? m.primeira_resposta.atual_seg : (respN ? Math.round(resp / respN) : null);
@@ -650,8 +649,8 @@ admin.get('/rede', async (req, res) => {
   const data = dataValida(req.query.data) ? req.query.data : hojeBrasilia();
   const { ini, fim } = intervalo(periodo, data, req.query.ate);
   const lojas = lojasVinculadas();
-  const linhas = [];
-  for (const u of lojas) { try { linhas.push(await linhaRede(u, periodo, ini, fim)); } catch (e) { /* pula a loja com erro */ } }
+  // Todas as lojas ao mesmo tempo (uma por uma ficava lento demais em semana/mês)
+  const linhas = (await Promise.all(lojas.map((u) => linhaRede(u, periodo, ini, fim).catch(() => null)))).filter(Boolean);
   // Lojas com checklist mas sem Orbitta também entram (só com o checklist)
   const semOrb = db.prepare(`SELECT id, nome, negocio_nome, checklist_ativo, checklist_desde FROM usuarios WHERE checklist_ativo = 1 AND is_admin = 0
     AND cargo IN ('lojista', 'checklist') AND (orbitta_vinculo IS NULL OR orbitta_vinculo = '')`).all();
