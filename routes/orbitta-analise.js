@@ -102,7 +102,27 @@ function reativacoesNasMensagens(msgs, anterior) {
   return out;
 }
 
+// Uma leitura por loja/dia por vez; devolve true enquanto ainda tem conversa pra ler
+const lendoAgora = new Set();
+function lerReativacoesEmFundo(u, dia) {
+  const k = u.id + '|' + dia;
+  if (!lendoAgora.has(k)) {
+    lendoAgora.add(k);
+    ob.comLoja(u, async () => {
+      // Lê de 60 em 60 até acabar (no máximo 15 rodadas por vez)
+      for (let i = 0; i < 15 && faltaLerReat(u.id, dia) > 0; i++) await lerReativacoes(u, dia);
+    }).catch((e) => console.error('Reativações Orbitta:', e.message)).finally(() => lendoAgora.delete(k));
+  }
+  return lendoAgora.has(k) || faltaLerReat(u.id, dia) > 0;
+}
+function faltaLerReat(usuarioId, dia) {
+  const limite = new Date(new Date(dia + 'T03:00:00Z').getTime() - DIAS_PARADO * 86400000).toISOString();
+  return db.prepare(`SELECT COUNT(*) AS n FROM orbitta_conversas WHERE usuario_id = ? AND data = ?
+    AND (primeira_mensagem IS NULL OR primeira_mensagem < ?) AND (reat_checada IS NULL OR reat_checada <> ultima_mensagem || ?)`).get(usuarioId, dia, limite, MARCA_REAT).n;
+}
+const falhou = new Set();
 async function lerReativacoes(u, dia) {
+  if (falhou.size > 5000) falhou.clear();
   const inicio = new Date(dia + 'T03:00:00Z');
   // Só conversas que começaram há 2+ dias podem ter ficado 2 dias paradas
   const limite = new Date(inicio.getTime() - DIAS_PARADO * 86400000).toISOString();
@@ -125,7 +145,10 @@ async function lerReativacoes(u, dia) {
         salvarReat.run(u.id, c.conversa_id, new Date(m.data).toISOString(), diaBrasilia(m.data), dias, String(m.texto || '').slice(0, 600), JSON.stringify(trecho));
       }
       marcarReat.run(c.ultima_mensagem + MARCA_REAT, u.id, dia, c.conversa_id);
-    } catch (e) { /* tenta na próxima */ }
+    } catch (e) {
+      // Deu erro 2 vezes na mesma conversa: marca pra não travar a leitura do dia
+      if (falhou.has(c.conversa_id)) marcarReat.run(c.ultima_mensagem + MARCA_REAT, u.id, dia, c.conversa_id); else falhou.add(c.conversa_id);
+    }
     await espera(80);
   }
 }
@@ -278,7 +301,8 @@ async function _analiseLoja(u, hoje) {
   const vendDoDia = new Map();
   for (const a of ags) if (a.conversa_id && a.vendedor_id) vendDoDia.set(a.conversa_id, a.vendedor_id);
   // Lê as conversas do dia atrás de reativações (vendedor mandou mensagem pra cliente parado há 2+ dias)
-  await lerReativacoes(u, ontem).catch(() => {});
+  // Em segundo plano: a resposta não espera a leitura das conversas (num dia cheio isso leva minutos)
+  const lendoReat = lerReativacoesEmFundo(u, ontem);
   // Só entra quem está na equipe do Orbitta naquele dia. O Orbitta não diz quem atendeu cada conversa;
   // o painel usa o vendedor do último agendamento do cliente, então um cliente antigo que voltou
   // aparecia no nome de quem já saiu da loja (ex.: vendedor desligado). Esses ficam de fora da lista por vendedor
@@ -342,7 +366,8 @@ async function _analiseLoja(u, hoje) {
     sem_vendedor_prox: porVend.has(null) ? porVend.get(null).ag_hoje : 0,
     reativacoes_total: reatTotal,
     reativacoes_nao_identificadas: reatNaoIdent,
-    incompleto: faltaram > 0,
+    incompleto: faltaram > 0 || lendoReat,
+    lendo_reativacoes: lendoReat,
     gerado_em: new Date().toISOString(),
   };
 }
