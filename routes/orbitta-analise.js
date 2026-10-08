@@ -274,7 +274,6 @@ async function _analiseLoja(u, hoje) {
     sem_vendedor_prox: porVend.has(null) ? porVend.get(null).ag_hoje : 0,
     reativacoes_total: reatTotal,
     reativacoes_nao_identificadas: reatNaoIdent,
-    reativacoes_lista: reatLista,
     incompleto: faltaram > 0,
     gerado_em: new Date().toISOString(),
   };
