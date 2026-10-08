@@ -23,6 +23,7 @@ const checklist = require('./routes/checklist');
 const leads = require('./routes/leads');
 const orbittaRotas = require('./routes/orbitta');
 const orbittaExtra = require('./routes/orbitta-extra');
+const orbittaAnalise = require('./routes/orbitta-analise');
 const { exigirLogin, exigirAdmin, exigirControle, verOutraLoja } = require('./middleware/auth');
 const { iniciarAgendamentoBackup } = require('./jobs/backup');
 const { iniciarVerificacaoAssinaturas } = require('./jobs/assinaturas');
@@ -162,8 +163,10 @@ app.use('/api/leads', exigirLogin, verOutraLoja, leads.lojista);
 // Dados automáticos do Orbitta (vendedores, novos x reativações)
 app.use('/api/admin/orbitta', exigirLogin, exigirControle, orbittaRotas.admin);
 app.use('/api/admin/orbitta', exigirLogin, exigirControle, orbittaExtra.admin);
+app.use('/api/orbitta', exigirLogin, verOutraLoja, orbittaAnalise.lojista);
 app.use('/api/orbitta', exigirLogin, verOutraLoja, orbittaRotas.lojista);
 app.use('/api/orbitta', exigirLogin, verOutraLoja, orbittaExtra.lojista);
+app.use('/api/lojas', exigirLogin, orbittaAnalise.lojas);
 app.use('/api/lojas', exigirLogin, orbittaExtra.lojas);
 // Notificações no celular (avisos de cliente sem resposta, fechamento do dia)
 app.use('/api/push', exigirLogin, push.rotas);
@@ -201,5 +204,6 @@ app.listen(PORT, '0.0.0.0', () => {
   iniciarAvisosChecklist();
   orbittaRotas.iniciarSincronizacaoOrbitta();
   orbittaExtra.iniciarExtrasOrbitta();
+  orbittaAnalise.iniciarAnalise();
   notas.iniciarBuscaSefaz();
 });
