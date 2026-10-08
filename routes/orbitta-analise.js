@@ -121,12 +121,21 @@ async function _analiseLoja(u, hoje) {
     if (!p && a.conversa_id) { const r = primeiraDaConversa.get(u.id, a.conversa_id); p = r && r.p; }
     if (p && new Date(p) < new Date(ontem + 'T03:00:00Z')) x.reativados_ag++;
   }
-  // Leads que cada vendedor pegou ontem (do que já foi sincronizado do Orbitta)
   const m = ob.montar(u.id, ontem, ontem);
-  for (const vd of m.vendedores || []) {
-    if (!vd.pegos) continue;
-    const x = pega(vd.id); x.novos = vd.novos || 0; x.reativacoes = vd.reativacoes || 0;
-    if (vd.nome && /^Vendedor /.test(x.nome)) x.nome = vd.nome;
+  // Reativados por vendedor: cada cliente que voltou no dia (já tinha falado com a loja antes) vai pro vendedor dele.
+  // O Orbitta não diz quem atendeu a conversa; o vendedor do cliente é quem marcou agendamento com ele no dia
+  // ou, se ninguém marcou, quem marcou o último agendamento dele.
+  const vendDoDia = new Map();
+  for (const a of ags) if (a.conversa_id && a.vendedor_id) vendDoDia.set(a.conversa_id, a.vendedor_id);
+  const inicioDia = new Date(ontem + 'T03:00:00Z');
+  const convs = db.prepare(`SELECT conversa_id, primeira_mensagem, vendedor_id, ficha_em FROM orbitta_conversas WHERE usuario_id = ? AND data = ?`).all(u.id, ontem);
+  let reatTotal = 0, reatPendentes = 0;
+  for (const c of convs) {
+    if (!c.ficha_em) { reatPendentes++; continue; }
+    if (!c.primeira_mensagem || !(new Date(c.primeira_mensagem) < inicioDia)) continue;
+    reatTotal++;
+    const dono = vendDoDia.get(c.conversa_id) || c.vendedor_id;
+    if (dono) pega(dono).reativacoes++;
   }
   // Só entra quem está na equipe do Orbitta naquele dia. O Orbitta não diz quem atendeu cada conversa;
   // o painel usa o vendedor do último agendamento do cliente, então um cliente antigo que voltou
@@ -140,7 +149,7 @@ async function _analiseLoja(u, hoje) {
       equipe = new Set(Object.keys(eq.atual.membros || {}));
       for (const [id, mb] of Object.entries(eq.atual.membros || {})) {
         if (!mb.conversas && !mb.agendamentos && !mb.vendas && !porVend.has(id)) continue;
-        const x = pega(id); x.conversas = mb.conversas || 0;
+            const x = pega(id); x.conversas = mb.conversas || 0;
         // Números do próprio Orbitta (iguais ao painel dele): agendamentos marcados, vendas e valor vendido no dia
         x.agendamentos_orbitta = mb.agendamentos || 0; x.vendas = mb.vendas || 0; x.valor_vendido = mb.valor_vendido || 0;
         if (mb.nome && /^Vendedor /.test(x.nome)) x.nome = mb.nome;
@@ -150,6 +159,8 @@ async function _analiseLoja(u, hoje) {
   const semVendedor = porVend.has(null) ? porVend.get(null).agendamentos : 0;
   const vendedores = [...porVend.values()].filter((x) => x.id && (!equipe || equipe.has(x.id)))
     .sort((a, b) => b.conversas - a.conversas || (b.agendamentos_orbitta ?? b.agendamentos) - (a.agendamentos_orbitta ?? a.agendamentos));
+  // Reativados que não ficaram com nenhum vendedor da equipe do dia (nunca agendaram, ou o vendedor dele não está mais na loja)
+  const reatSemVendedor = Math.max(0, reatTotal - vendedores.reduce((s, x) => s + x.reativacoes, 0));
 
   const g = (k) => (comparado && comparado[k] ? comparado[k].atual : null);
   return {
@@ -159,6 +170,9 @@ async function _analiseLoja(u, hoje) {
     agendamentos_hoje: paraHoje,
     vendedores,
     sem_vendedor: semVendedor,
+    reativados_total: reatTotal,
+    reativados_sem_vendedor: reatSemVendedor,
+    reativados_pendentes: reatPendentes,
     incompleto: faltaram > 0,
     gerado_em: new Date().toISOString(),
   };
