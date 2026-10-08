@@ -217,6 +217,8 @@ async function _analiseLoja(u, hoje) {
   const m = ob.montar(u.id, ontem, ontem);
   const vendDoDia = new Map();
   for (const a of ags) if (a.conversa_id && a.vendedor_id) vendDoDia.set(a.conversa_id, a.vendedor_id);
+  // Lê as conversas do dia atrás de reativações (vendedor mandou mensagem pra cliente parado há 7+ dias)
+  await lerReativacoes(u, ontem).catch(() => {});
   // Só entra quem está na equipe do Orbitta naquele dia. O Orbitta não diz quem atendeu cada conversa;
   // o painel usa o vendedor do último agendamento do cliente, então um cliente antigo que voltou
   // aparecia no nome de quem já saiu da loja (ex.: vendedor desligado). Esses ficam de fora da lista por vendedor
