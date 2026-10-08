@@ -25,6 +25,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS orbitta_agendamentos (
   lido_em TEXT DEFAULT (datetime('now'))
 )`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_orb_ag_criado ON orbitta_agendamentos (usuario_id, criado_dia)`);
+// Quando o cliente falou com a loja pela primeira vez (pra saber se o agendamento é de cliente novo ou reativado)
+try { db.exec('ALTER TABLE orbitta_agendamentos ADD COLUMN primeira_msg TEXT'); } catch (e) { /* já existe */ }
 
 const JANELA_DIAS = 45;        // agendamentos marcados ontem costumam ser pra até ~1 mês e meio
 const FICHAS_POR_PEDIDO = 200; // limite de fichas lidas por vez (o resto entra na próxima)
@@ -38,6 +40,8 @@ const salvar = db.prepare(`INSERT INTO orbitta_agendamentos (id, usuario_id, con
     status = excluded.status, lido_em = excluded.lido_em`);
 const conhecido = db.prepare('SELECT 1 FROM orbitta_agendamentos WHERE id = ?');
 const nomeDe = db.prepare('SELECT nome FROM orbitta_membros WHERE id = ?');
+const guardarPrimeira = db.prepare('UPDATE orbitta_agendamentos SET primeira_msg = ? WHERE conversa_id = ?');
+const primeiraDaConversa = db.prepare('SELECT MIN(primeira_mensagem) AS p FROM orbitta_conversas WHERE usuario_id = ? AND conversa_id = ?');
 
 // Todos os agendamentos com data marcada no intervalo (página por página)
 async function listarAgendamentos(f, ini, fim) {
@@ -77,6 +81,7 @@ async function _analiseLoja(u, hoje) {
           x.attendant_user_id || x.created_by_user_id || null, x.booking_date || null, x.confirmation_status || x.status || null);
       }
       if (!conhecido.get(a.id)) salvar.run(a.id, u.id, a.conversa_id, null, null, null, a.data || null, a.status || null);
+      if (fi.primeira_mensagem) guardarPrimeira.run(fi.primeira_mensagem, a.conversa_id);
     } catch (e) { /* tenta de novo na próxima */ }
     await espera(80);
   }
@@ -84,16 +89,26 @@ async function _analiseLoja(u, hoje) {
   const atualizar = db.prepare('UPDATE orbitta_agendamentos SET data_agendada = ?, status = ? WHERE id = ?');
   for (const a of lista) if (a.id) atualizar.run(a.data || null, a.status || null, a.id);
 
+  // Agendamentos do dia já conhecidos mas sem a data da 1ª mensagem do cliente: busca a ficha (poucas por vez)
+  const semPrimeira = db.prepare(`SELECT DISTINCT conversa_id FROM orbitta_agendamentos WHERE usuario_id = ? AND criado_dia = ? AND primeira_msg IS NULL AND conversa_id IS NOT NULL LIMIT 40`).all(u.id, ontem);
+  for (const { conversa_id } of semPrimeira) {
+    const ja = primeiraDaConversa.get(u.id, conversa_id);
+    if (ja && ja.p) { guardarPrimeira.run(ja.p, conversa_id); continue; }
+    const origem = (lista.find((a) => a.conversa_id === conversa_id) || {}).origem === 'unidade' ? 'unidade' : 'agente';
+    try { const fi = await orbitta.chamar('ficha_do_lead', { id: conversa_id, origem }); guardarPrimeira.run(fi.primeira_mensagem || '-', conversa_id); } catch (e) { /* próxima */ }
+    await espera(80);
+  }
+
   const paraHoje = lista.filter((a) => a.data === hoje && !cancelado(a)).length;
 
   // Agendamentos marcados ontem, por vendedor
-  const ags = db.prepare(`SELECT vendedor_id, data_agendada, status FROM orbitta_agendamentos WHERE usuario_id = ? AND criado_dia = ?`).all(u.id, ontem)
+  const ags = db.prepare(`SELECT vendedor_id, data_agendada, status, conversa_id, primeira_msg FROM orbitta_agendamentos WHERE usuario_id = ? AND criado_dia = ?`).all(u.id, ontem)
     .filter((a) => !/cancel/i.test(a.status || ''));
   const porVend = new Map();
   const pega = (id) => {
     if (!porVend.has(id)) {
       const n = id ? nomeDe.get(id) : null;
-      porVend.set(id, { id, nome: (n && n.nome) || (id ? 'Vendedor ' + String(id).slice(0, 4) : 'Sem vendedor'), conversas: 0, novos: 0, reativacoes: 0, agendamentos: 0, ag_hoje: 0, ag_outros: 0 });
+      porVend.set(id, { id, nome: (n && n.nome) || (id ? 'Vendedor ' + String(id).slice(0, 4) : 'Sem vendedor'), conversas: 0, novos: 0, reativacoes: 0, agendamentos: 0, ag_hoje: 0, ag_outros: 0, reativados_ag: 0 });
     }
     return porVend.get(id);
   };
@@ -101,6 +116,10 @@ async function _analiseLoja(u, hoje) {
     const x = pega(a.vendedor_id);
     x.agendamentos++;
     if (a.data_agendada === hoje) x.ag_hoje++; else x.ag_outros++;
+    // Reativado = o cliente já tinha falado com a loja antes desse dia
+    let p = a.primeira_msg;
+    if (!p && a.conversa_id) { const r = primeiraDaConversa.get(u.id, a.conversa_id); p = r && r.p; }
+    if (p && new Date(p) < new Date(ontem + 'T03:00:00Z')) x.reativados_ag++;
   }
   // Leads que cada vendedor pegou ontem (do que já foi sincronizado do Orbitta)
   const m = ob.montar(u.id, ontem, ontem);
