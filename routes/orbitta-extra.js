@@ -649,7 +649,16 @@ admin.get('/rede', async (req, res) => {
   const periodo = ['dia', 'semana', 'mes', 'livre'].includes(req.query.periodo) ? req.query.periodo : 'dia';
   const data = dataValida(req.query.data) ? req.query.data : hojeBrasilia();
   const { ini, fim } = intervalo(periodo, data, req.query.ate);
-  const lojas = lojasVinculadas();
+  // ?rede=<id>: só as lojas daquela rede (botão da rede no menu). Filtra ANTES de puxar do Orbitta,
+  // senão abrir uma rede de 4 lojas puxava todas as lojas e demorava à toa.
+  let daRede = null;
+  if (req.query.rede) {
+    const r = redesVisiveis(req).find((x) => String(x.id) === String(req.query.rede));
+    if (!r) return res.status(403).json({ erro: 'Seu cargo não dá acesso a essa rede.' });
+    daRede = new Set(r.lojas.map((l) => Number(l.id)));
+  }
+  const ve = (l) => (!req.redeLojas || req.redeLojas.has(Number(l.id))) && (!daRede || daRede.has(Number(l.id)));
+  const lojas = lojasVinculadas().filter(ve);
   // Todas as lojas ao mesmo tempo (uma por uma ficava lento demais em semana/mês)
   const linhas = (await Promise.all(lojas.map((u) => linhaRede(u, periodo, ini, fim).catch(() => null)))).filter(Boolean);
   // Lojas com checklist mas sem Orbitta também entram (só com o checklist)
@@ -660,14 +669,6 @@ admin.get('/rede', async (req, res) => {
     return { id: u.id, nome: u.negocio_nome || u.nome, sem_orbitta: true, checklist };
   });
   notasDaRede(linhas);
-  // ?rede=<id do cargo>: só as lojas daquela rede (botão da rede no menu)
-  let daRede = null;
-  if (req.query.rede) {
-    const r = redesVisiveis(req).find((x) => String(x.id) === String(req.query.rede));
-    if (!r) return res.status(403).json({ erro: 'Seu cargo não dá acesso a essa rede.' });
-    daRede = new Set(r.lojas.map((l) => l.id));
-  }
-  const ve = (l) => (!req.redeLojas || req.redeLojas.has(Number(l.id))) && (!daRede || daRede.has(Number(l.id)));
   res.json({ periodo, ini, fim, hoje: hojeBrasilia(), lojas: linhas.filter(ve), so_checklist: soChecklist.filter(ve), configurado: orbitta.configurado(), rede: req.query.rede || null });
 });
 // Redes = cargos com "Ver Rede de lojas" e lojas marcadas. Admin e controle veem todas; os outros, só as redes dos seus cargos.
