@@ -207,5 +207,5 @@ app.listen(PORT, '0.0.0.0', () => {
   orbittaAnalise.iniciarAnalise();
   notas.iniciarBuscaSefaz();
   try { require('./jobs/cargos-redes').criarCargosRedes(); } catch (e) { console.error('Cargos das redes:', e.message); }
-  try { const o = require('./jobs/cargos-odres'); o.criarCargosOdres(); o.liberarAvaliacaoRegionalA(); } catch (e) { console.error('Cargos da Odres 12:', e.message); }
+  try { const o = require('./jobs/cargos-odres'); o.criarCargosOdres(); o.liberarAvaliacaoRegionalA(); o.criarCargosOdresDemais(); } catch (e) { console.error('Cargos da Odres 12:', e.message); }
 });

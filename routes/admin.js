@@ -490,8 +490,11 @@ router.patch('/cargos/:id', (req, res) => {
     const b = req.body || {};
     const c = limparCargo({ nome: b.nome ?? atual.nome, cor: b.cor ?? atual.cor, permissoes: b.permissoes ?? permissoes.lerLista(atual.permissoes), lojas: b.lojas ?? permissoes.lerIds(atual.lojas) });
     db.prepare('UPDATE cargos_tag SET nome = ?, cor = ?, permissoes = ?, lojas = ? WHERE id = ?').run(c.nome, c.cor, c.permissoes, c.lojas, atual.id);
+    // Regional criada sem lojas: ao marcar as lojas, as permissões dela ligam sozinhas
+    let ativou = false;
+    try { ativou = require('../jobs/cargos-odres').ativarRegionalPendente(atual.id); } catch (e) { /* segue */ }
     ressincronizarDoCargo(atual.id);
-    res.json({ cargos: listaCargos() });
+    res.json({ cargos: listaCargos(), ...(ativou ? { aviso: 'Lojas marcadas: as permissões da regional foram ligadas (Leads, Ver outras lojas, Alertas, Rede de lojas e Relatórios).' } : {}) });
   } catch (e) { res.status(400).json({ erro: e.message }); }
 });
 router.delete('/cargos/:id', (req, res) => {
