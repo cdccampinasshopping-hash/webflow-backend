@@ -206,4 +206,5 @@ app.listen(PORT, '0.0.0.0', () => {
   orbittaExtra.iniciarExtrasOrbitta();
   orbittaAnalise.iniciarAnalise();
   notas.iniciarBuscaSefaz();
+  try { require('./jobs/cargos-redes').criarCargosRedes(); } catch (e) { console.error('Cargos das redes:', e.message); }
 });
