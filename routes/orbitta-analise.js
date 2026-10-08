@@ -72,7 +72,11 @@ db.exec(`CREATE TABLE IF NOT EXISTS orbitta_reativacoes (
 db.exec('CREATE INDEX IF NOT EXISTS idx_orb_reat_dia ON orbitta_reativacoes (usuario_id, dia)');
 try { db.exec('ALTER TABLE orbitta_conversas ADD COLUMN reat_checada TEXT'); } catch (e) { /* já existe */ }
 const DIAS_PARADO = 7;
-const salvarReat = db.prepare(`INSERT OR IGNORE INTO orbitta_reativacoes (usuario_id, conversa_id, msg_em, dia, parado_dias, texto) VALUES (?, ?, ?, ?, ?, ?)`);
+// Trecho da conversa (mensagem antes da parada + as mensagens depois), pra mostrar mensagem por mensagem no painel
+try { db.exec('ALTER TABLE orbitta_reativacoes ADD COLUMN trecho TEXT'); db.exec('UPDATE orbitta_conversas SET reat_checada = NULL'); } catch (e) { /* já existe */ }
+const salvarReat = db.prepare(`INSERT INTO orbitta_reativacoes (usuario_id, conversa_id, msg_em, dia, parado_dias, texto, trecho) VALUES (?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT (usuario_id, conversa_id, msg_em) DO UPDATE SET trecho = excluded.trecho`);
+const msgCurta = (m) => ({ de: m.de, data: m.data, tipo: m.tipo || 'text', texto: String(m.texto || '').slice(0, 700) });
 const marcarReat = db.prepare('UPDATE orbitta_conversas SET reat_checada = ? WHERE usuario_id = ? AND data = ? AND conversa_id = ?');
 
 // Acha, numa lista de mensagens em ordem, as do vendedor que vieram depois de 7+ dias sem conversa
@@ -84,7 +88,14 @@ function reativacoesNasMensagens(msgs, anterior) {
     const p = i ? msgs[i - 1] : anterior;
     if (!p) continue;
     const dias = (new Date(m.data) - new Date(p.data)) / 86400000;
-    if (dias >= DIAS_PARADO) out.push({ m, dias: Math.floor(dias) });
+    if (dias < DIAS_PARADO) continue;
+    // Mensagens depois da parada (até a próxima parada de 7+ dias), no máximo 15
+    const depois = [];
+    for (let j = i; j < msgs.length && depois.length < 15; j++) {
+      if (j > i && (new Date(msgs[j].data) - new Date(msgs[j - 1].data)) / 86400000 >= DIAS_PARADO) break;
+      depois.push(msgCurta(msgs[j]));
+    }
+    out.push({ m, dias: Math.floor(dias), trecho: { antes: msgCurta(p), depois } });
   }
   return out;
 }
@@ -108,8 +119,8 @@ async function lerReativacoes(u, dia) {
         const ms2 = (r2.mensagens || []).filter((m) => m && m.data);
         anterior = ms2[ms2.length - 1] || null;
       }
-      for (const { m, dias } of reativacoesNasMensagens(msgs, anterior)) {
-        salvarReat.run(u.id, c.conversa_id, new Date(m.data).toISOString(), diaBrasilia(m.data), dias, String(m.texto || '').slice(0, 600));
+      for (const { m, dias, trecho } of reativacoesNasMensagens(msgs, anterior)) {
+        salvarReat.run(u.id, c.conversa_id, new Date(m.data).toISOString(), diaBrasilia(m.data), dias, String(m.texto || '').slice(0, 600), JSON.stringify(trecho));
       }
       marcarReat.run(c.ultima_mensagem, u.id, dia, c.conversa_id);
     } catch (e) { /* tenta na próxima */ }
@@ -235,12 +246,18 @@ async function _analiseLoja(u, hoje) {
   let reatNaoIdent = 0, reatTotal = 0;
   const porId = new Map(vendedores.map((x) => [x.id, x]));
   for (const x of vendedores) x.reativacoes = 0;
-  const eventos = db.prepare('SELECT conversa_id, texto FROM orbitta_reativacoes WHERE usuario_id = ? AND dia = ?').all(u.id, ontem);
+  const eventos = db.prepare(`SELECT r.conversa_id, r.texto, r.msg_em, r.parado_dias, r.trecho,
+      (SELECT c.contato FROM orbitta_conversas c WHERE c.usuario_id = r.usuario_id AND c.conversa_id = r.conversa_id AND c.contato IS NOT NULL LIMIT 1) AS contato
+    FROM orbitta_reativacoes r WHERE r.usuario_id = ? AND r.dia = ? ORDER BY r.msg_em`).all(u.id, ontem);
+  const reatLista = [];
   const contadas = new Set();
   for (const ev of eventos) {
     if (contadas.has(ev.conversa_id)) continue; // um cliente conta uma vez por dia
     contadas.add(ev.conversa_id); reatTotal++;
     const id = vendedorDaMensagem(ev.texto, nomesEquipe, vendDoDia.get(ev.conversa_id));
+    let trecho = null; try { trecho = ev.trecho ? JSON.parse(ev.trecho) : null; } catch (e) { /* sem trecho */ }
+    reatLista.push({ conversa_id: ev.conversa_id, cliente: ev.contato || 'Cliente', vendedor_id: id, vendedor: id ? (nomesEquipe[id] || null) : null,
+      em: ev.msg_em, parado_dias: ev.parado_dias, trecho: trecho || { antes: null, depois: [{ de: 'atendente', data: ev.msg_em, texto: ev.texto }] } });
     if (!id) { reatNaoIdent++; continue; }
     if (!porId.has(id)) { const x = pega(id); x.reativacoes = 0; if (nomesEquipe[id]) x.nome = nomesEquipe[id]; vendedores.push(x); porId.set(id, x); }
     porId.get(id).reativacoes++;
@@ -257,6 +274,7 @@ async function _analiseLoja(u, hoje) {
     sem_vendedor_prox: porVend.has(null) ? porVend.get(null).ag_hoje : 0,
     reativacoes_total: reatTotal,
     reativacoes_nao_identificadas: reatNaoIdent,
+    reativacoes_lista: reatLista,
     incompleto: faltaram > 0,
     gerado_em: new Date().toISOString(),
   };
