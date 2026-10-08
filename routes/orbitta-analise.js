@@ -55,6 +55,86 @@ async function listarAgendamentos(f, ini, fim) {
   return lista;
 }
 
+/* ---------------- Reativação por vendedor ----------------
+   Conta +1 quando o vendedor (atendente) manda mensagem pra um cliente que estava há 7 dias ou mais sem conversa
+   (a mensagem anterior da conversa, de qualquer um, tem 7+ dias). O Orbitta não diz qual vendedor mandou a mensagem;
+   o vendedor é reconhecido pelo nome na mensagem ("sou o Nicolas"), pelo agendamento marcado no dia ou, por último,
+   por um nome da equipe citado na mensagem. */
+db.exec(`CREATE TABLE IF NOT EXISTS orbitta_reativacoes (
+  usuario_id INTEGER NOT NULL,
+  conversa_id TEXT NOT NULL,
+  msg_em TEXT NOT NULL,
+  dia TEXT NOT NULL,
+  parado_dias INTEGER,
+  texto TEXT,
+  PRIMARY KEY (usuario_id, conversa_id, msg_em)
+)`);
+db.exec('CREATE INDEX IF NOT EXISTS idx_orb_reat_dia ON orbitta_reativacoes (usuario_id, dia)');
+try { db.exec('ALTER TABLE orbitta_conversas ADD COLUMN reat_checada TEXT'); } catch (e) { /* já existe */ }
+const DIAS_PARADO = 7;
+const salvarReat = db.prepare(`INSERT OR IGNORE INTO orbitta_reativacoes (usuario_id, conversa_id, msg_em, dia, parado_dias, texto) VALUES (?, ?, ?, ?, ?, ?)`);
+const marcarReat = db.prepare('UPDATE orbitta_conversas SET reat_checada = ? WHERE usuario_id = ? AND data = ? AND conversa_id = ?');
+
+// Acha, numa lista de mensagens em ordem, as do vendedor que vieram depois de 7+ dias sem conversa
+function reativacoesNasMensagens(msgs, anterior) {
+  const out = [];
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+    if (m.de !== 'atendente') continue;
+    const p = i ? msgs[i - 1] : anterior;
+    if (!p) continue;
+    const dias = (new Date(m.data) - new Date(p.data)) / 86400000;
+    if (dias >= DIAS_PARADO) out.push({ m, dias: Math.floor(dias) });
+  }
+  return out;
+}
+
+async function lerReativacoes(u, dia) {
+  const inicio = new Date(dia + 'T03:00:00Z');
+  // Só conversas que começaram há 7+ dias podem ter ficado 7 dias paradas
+  const limite = new Date(inicio.getTime() - DIAS_PARADO * 86400000).toISOString();
+  const lista = db.prepare(`SELECT conversa_id, origem, ultima_mensagem FROM orbitta_conversas WHERE usuario_id = ? AND data = ?
+    AND (primeira_mensagem IS NULL OR primeira_mensagem < ?) AND (reat_checada IS NULL OR reat_checada <> ultima_mensagem)
+    ORDER BY ultima_mensagem DESC LIMIT 60`).all(u.id, dia, limite);
+  for (const c of lista) {
+    try {
+      const origem = c.origem === 'unidade' ? 'unidade' : 'agente';
+      const r = await orbitta.chamar('ler_conversa', { id: c.conversa_id, origem, limit: 40 });
+      const msgs = (r.mensagens || []).filter((m) => m && m.data);
+      let anterior = null;
+      // A 1ª mensagem da página é do vendedor: busca a mensagem de antes pra medir o tempo parado
+      if (msgs[0] && msgs[0].de === 'atendente' && r.proxima_pagina_antes_de) {
+        const r2 = await orbitta.chamar('ler_conversa', { id: c.conversa_id, origem, limit: 3, antes_de: r.proxima_pagina_antes_de });
+        const ms2 = (r2.mensagens || []).filter((m) => m && m.data);
+        anterior = ms2[ms2.length - 1] || null;
+      }
+      for (const { m, dias } of reativacoesNasMensagens(msgs, anterior)) {
+        salvarReat.run(u.id, c.conversa_id, new Date(m.data).toISOString(), diaBrasilia(m.data), dias, String(m.texto || '').slice(0, 600));
+      }
+      marcarReat.run(c.ultima_mensagem, u.id, dia, c.conversa_id);
+    } catch (e) { /* tenta na próxima */ }
+    await espera(80);
+  }
+}
+
+const semAcento = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+const PALAVRAS_FORA = new Set(['de', 'da', 'do', 'das', 'dos', 'e']);
+// Quem mandou a mensagem de reativação, entre os vendedores da equipe do dia ({ id: nome })
+function vendedorDaMensagem(texto, equipe, vendDoDia) {
+  const t = semAcento(texto);
+  const nomes = Object.entries(equipe).map(([id, nome]) => ({ id, partes: semAcento(nome).split(/\s+/).filter((p) => p.length >= 3 && !PALAVRAS_FORA.has(p)) }));
+  const comParte = (p) => nomes.filter((n) => n.partes.includes(p));
+  // 1) se apresentou: "sou o Nicolas", "meu nome é Lucas", "aqui é a Irys"
+  const ap = t.match(/\b(?:sou\s+(?:o|a)|meu\s+nome\s+e|aqui\s+(?:quem\s+fala\s+)?e\s+(?:o|a))\s+([a-z]{3,})/);
+  if (ap) { const c = comParte(ap[1]); if (c.length === 1) return c[0].id; }
+  // 2) marcou agendamento com esse cliente no dia
+  if (vendDoDia && equipe[vendDoDia]) return vendDoDia;
+  // 3) um único nome da equipe aparece na mensagem
+  const citados = nomes.filter((n) => n.partes.some((p) => new RegExp('\\b' + p + '\\b').test(t)));
+  if (citados.length === 1) return citados[0].id;
+  return null;
+}
+
 async function _analiseLoja(u, hoje) {
   const v = ob.vinculoDe(u);
   if (!v) return { vinculado: false };
@@ -122,34 +202,25 @@ async function _analiseLoja(u, hoje) {
     if (p && new Date(p) < new Date(ontem + 'T03:00:00Z')) x.reativados_ag++;
   }
   const m = ob.montar(u.id, ontem, ontem);
-  // Reativados por vendedor: cada cliente que voltou no dia (já tinha falado com a loja antes) vai pro vendedor dele.
-  // O Orbitta não diz quem atendeu a conversa; o vendedor do cliente é quem marcou agendamento com ele no dia
-  // ou, se ninguém marcou, quem marcou o último agendamento dele.
   const vendDoDia = new Map();
   for (const a of ags) if (a.conversa_id && a.vendedor_id) vendDoDia.set(a.conversa_id, a.vendedor_id);
-  const inicioDia = new Date(ontem + 'T03:00:00Z');
-  const convs = db.prepare(`SELECT conversa_id, primeira_mensagem, vendedor_id, ficha_em FROM orbitta_conversas WHERE usuario_id = ? AND data = ?`).all(u.id, ontem);
-  let reatTotal = 0, reatPendentes = 0;
-  for (const c of convs) {
-    if (!c.ficha_em) { reatPendentes++; continue; }
-    if (!c.primeira_mensagem || !(new Date(c.primeira_mensagem) < inicioDia)) continue;
-    reatTotal++;
-    const dono = vendDoDia.get(c.conversa_id) || c.vendedor_id;
-    if (dono) pega(dono).reativacoes++;
-  }
+  // Lê as conversas do dia que ainda não foram olhadas atrás de reativações (vendedor escreveu depois de 7+ dias parado)
+  await lerReativacoes(u, ontem).catch(() => {});
   // Só entra quem está na equipe do Orbitta naquele dia. O Orbitta não diz quem atendeu cada conversa;
   // o painel usa o vendedor do último agendamento do cliente, então um cliente antigo que voltou
   // aparecia no nome de quem já saiu da loja (ex.: vendedor desligado). Esses ficam de fora da lista por vendedor
   // (continuam contando nos totais da loja).
   // "Conversas atendidas" vem pronta do Orbitta por vendedor (é o número exato de quem atendeu no dia)
   let equipe = null;
+  const nomesEquipe = {};
   try {
     const eq = await ob.equipeAoVivo(u, ontem, ontem);
     if (eq && eq.atual) {
       equipe = new Set(Object.keys(eq.atual.membros || {}));
+      for (const [id, mb] of Object.entries(eq.atual.membros || {})) if (mb.nome) nomesEquipe[id] = mb.nome;
       for (const [id, mb] of Object.entries(eq.atual.membros || {})) {
         if (!mb.conversas && !mb.agendamentos && !mb.vendas && !porVend.has(id)) continue;
-            const x = pega(id); x.conversas = mb.conversas || 0;
+        const x = pega(id); x.conversas = mb.conversas || 0;
         // Números do próprio Orbitta (iguais ao painel dele): agendamentos marcados, vendas e valor vendido no dia
         x.agendamentos_orbitta = mb.agendamentos || 0; x.vendas = mb.vendas || 0; x.valor_vendido = mb.valor_vendido || 0;
         if (mb.nome && /^Vendedor /.test(x.nome)) x.nome = mb.nome;
@@ -159,10 +230,21 @@ async function _analiseLoja(u, hoje) {
   const semVendedor = porVend.has(null) ? porVend.get(null).agendamentos : 0;
   const vendedores = [...porVend.values()].filter((x) => x.id && (!equipe || equipe.has(x.id)))
     .sort((a, b) => b.conversas - a.conversas || (b.agendamentos_orbitta ?? b.agendamentos) - (a.agendamentos_orbitta ?? a.agendamentos));
-  // Reativados que não ficaram com nenhum vendedor da equipe do dia (nunca agendaram, ou o vendedor dele não está mais na loja)
-  // Fecha com o total de leads recorrentes do próprio Orbitta (o mesmo número do quadro da loja)
-  const recOrbitta = comparado && comparado.leads_recorrentes ? comparado.leads_recorrentes.atual : null;
-  const reatSemVendedor = Math.max(0, (recOrbitta ?? reatTotal) - vendedores.reduce((s, x) => s + x.reativacoes, 0));
+  // Reativações do dia por vendedor
+  for (const x of vendedores) if (!nomesEquipe[x.id]) nomesEquipe[x.id] = x.nome;
+  let reatNaoIdent = 0, reatTotal = 0;
+  const porId = new Map(vendedores.map((x) => [x.id, x]));
+  for (const x of vendedores) x.reativacoes = 0;
+  const eventos = db.prepare('SELECT conversa_id, texto FROM orbitta_reativacoes WHERE usuario_id = ? AND dia = ?').all(u.id, ontem);
+  const contadas = new Set();
+  for (const ev of eventos) {
+    if (contadas.has(ev.conversa_id)) continue; // um cliente conta uma vez por dia
+    contadas.add(ev.conversa_id); reatTotal++;
+    const id = vendedorDaMensagem(ev.texto, nomesEquipe, vendDoDia.get(ev.conversa_id));
+    if (!id) { reatNaoIdent++; continue; }
+    if (!porId.has(id)) { const x = pega(id); x.reativacoes = 0; if (nomesEquipe[id]) x.nome = nomesEquipe[id]; vendedores.push(x); porId.set(id, x); }
+    porId.get(id).reativacoes++;
+  }
 
   const g = (k) => (comparado && comparado[k] ? comparado[k].atual : null);
   return {
@@ -173,9 +255,8 @@ async function _analiseLoja(u, hoje) {
     vendedores,
     sem_vendedor: semVendedor,
     sem_vendedor_prox: porVend.has(null) ? porVend.get(null).ag_hoje : 0,
-    reativados_total: reatTotal,
-    reativados_sem_vendedor: reatSemVendedor,
-    reativados_pendentes: reatPendentes,
+    reativacoes_total: reatTotal,
+    reativacoes_nao_identificadas: reatNaoIdent,
     incompleto: faltaram > 0,
     gerado_em: new Date().toISOString(),
   };
@@ -241,4 +322,4 @@ function iniciarAnalise() {
   setInterval(rodar, 30 * 60 * 1000);
 }
 
-module.exports = { lojista, lojas, iniciarAnalise };
+module.exports = { lojista, lojas, iniciarAnalise, reativacoesNasMensagens, vendedorDaMensagem };
