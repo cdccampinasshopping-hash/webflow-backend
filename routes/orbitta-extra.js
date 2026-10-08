@@ -660,7 +660,15 @@ admin.get('/rede', async (req, res) => {
   const ve = (l) => (!req.redeLojas || req.redeLojas.has(Number(l.id))) && (!daRede || daRede.has(Number(l.id)));
   const lojas = lojasVinculadas().filter(ve);
   // Todas as lojas ao mesmo tempo (uma por uma ficava lento demais em semana/mês)
-  const linhas = (await Promise.all(lojas.map((u) => linhaRede(u, periodo, ini, fim).catch(() => null)))).filter(Boolean);
+  // Cada loja tem até 9 s pra responder; a que demorar mais aparece como "carregando" e continua sendo
+  // buscada por trás (fica guardada), então a tela abre logo e completa sozinha em seguida.
+  const pendentes = [];
+  const comPrazo = (u) => {
+    const busca = linhaRede(u, periodo, ini, fim).catch(() => null);
+    return Promise.race([busca, new Promise((ok) => setTimeout(() => ok('demorou'), 9000))])
+      .then((r) => { if (r === 'demorou') { pendentes.push({ id: u.id, nome: u.negocio_nome || u.nome }); return null; } return r; });
+  };
+  const linhas = (await Promise.all(lojas.map(comPrazo))).filter(Boolean);
   // Lojas com checklist mas sem Orbitta também entram (só com o checklist)
   const semOrb = db.prepare(`SELECT id, nome, negocio_nome, checklist_ativo, checklist_desde FROM usuarios WHERE checklist_ativo = 1 AND is_admin = 0
     AND cargo IN ('lojista', 'checklist') AND (orbitta_vinculo IS NULL OR orbitta_vinculo = '')`).all();
@@ -669,7 +677,7 @@ admin.get('/rede', async (req, res) => {
     return { id: u.id, nome: u.negocio_nome || u.nome, sem_orbitta: true, checklist };
   });
   notasDaRede(linhas);
-  res.json({ periodo, ini, fim, hoje: hojeBrasilia(), lojas: linhas.filter(ve), so_checklist: soChecklist.filter(ve), configurado: orbitta.configurado(), rede: req.query.rede || null });
+  res.json({ periodo, ini, fim, hoje: hojeBrasilia(), lojas: linhas.filter(ve), pendentes, so_checklist: soChecklist.filter(ve), configurado: orbitta.configurado(), rede: req.query.rede || null });
 });
 // Redes = cargos com "Ver Rede de lojas" e lojas marcadas. Admin e controle veem todas; os outros, só as redes dos seus cargos.
 function redesVisiveis(req) {
