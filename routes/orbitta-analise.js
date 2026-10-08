@@ -160,7 +160,9 @@ async function _analiseLoja(u, hoje) {
   const vendedores = [...porVend.values()].filter((x) => x.id && (!equipe || equipe.has(x.id)))
     .sort((a, b) => b.conversas - a.conversas || (b.agendamentos_orbitta ?? b.agendamentos) - (a.agendamentos_orbitta ?? a.agendamentos));
   // Reativados que não ficaram com nenhum vendedor da equipe do dia (nunca agendaram, ou o vendedor dele não está mais na loja)
-  const reatSemVendedor = Math.max(0, reatTotal - vendedores.reduce((s, x) => s + x.reativacoes, 0));
+  // Fecha com o total de leads recorrentes do próprio Orbitta (o mesmo número do quadro da loja)
+  const recOrbitta = comparado && comparado.leads_recorrentes ? comparado.leads_recorrentes.atual : null;
+  const reatSemVendedor = Math.max(0, (recOrbitta ?? reatTotal) - vendedores.reduce((s, x) => s + x.reativacoes, 0));
 
   const g = (k) => (comparado && comparado[k] ? comparado[k].atual : null);
   return {
