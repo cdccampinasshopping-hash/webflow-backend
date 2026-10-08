@@ -497,9 +497,10 @@ function iniciarExtrasOrbitta() {
   if (!orbitta.configurado()) return;
   let rodando = false;
   const alertas = async () => { if (rodando) return; rodando = true; try { await rodadaAlertas(); } catch (e) { console.error(e.message); } rodando = false; };
-  // Confere a cada 1 min pra o aviso de 5 min sair na hora certa (só lê as conversas que mudaram)
+  // Confere a cada 20 s pra lista de "sem resposta" do painel ficar quase ao vivo
+  // (só lê as conversas que mudaram; se uma rodada demorar mais, a próxima é pulada)
   setTimeout(alertas, 90 * 1000);
-  setInterval(alertas, 60 * 1000);
+  setInterval(alertas, 20 * 1000);
   setInterval(() => rodadaResumo().catch((e) => console.error('Orbitta resumo:', e.message)), 10 * 60 * 1000);
   setInterval(() => rodadaLembretes().catch((e) => console.error('Lembrete visitas:', e.message)), 10 * 60 * 1000);
 }
