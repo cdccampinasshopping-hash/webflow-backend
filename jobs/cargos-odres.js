@@ -39,4 +39,17 @@ function criarCargosOdres() {
   })();
 }
 
-module.exports = { criarCargosOdres };
+// 08/10/2026: a Regional A também avalia o checklist (só das lojas da Odres 12: a permissão respeita as lojas do cargo)
+function liberarAvaliacaoRegionalA() {
+  const ID = 'odres-12-regional-a-relatorios-2026-10-08';
+  if (db.prepare('SELECT 1 FROM seeds_feitos WHERE id = ?').get(ID)) return;
+  const c = db.prepare(`SELECT id, permissoes, lojas FROM cargos_tag WHERE lower(trim(nome)) = 'odres 12 regional a'`).get();
+  if (!c) return; // o cargo ainda não foi criado: tenta no próximo início
+  if (!permissoes.lerIds(c.lojas).length) { console.log('Odres 12 Regional A sem lojas marcadas: não liberei relatórios (veria todas as lojas).'); return; }
+  const p = [...new Set([...permissoes.lerLista(c.permissoes), 'relatorios'])];
+  db.prepare('UPDATE cargos_tag SET permissoes = ? WHERE id = ?').run(JSON.stringify(p), c.id);
+  db.prepare('INSERT INTO seeds_feitos (id) VALUES (?)').run(ID);
+  console.log('Odres 12 Regional A agora avalia o checklist das lojas dela.');
+}
+
+module.exports = { criarCargosOdres, liberarAvaliacaoRegionalA };

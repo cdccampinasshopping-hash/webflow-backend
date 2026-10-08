@@ -559,7 +559,7 @@ admin.get('/loja/:id', async (req, res) => {
 // ---------------- conferência: Orbitta agora x o que o painel tem guardado ----------------
 admin.get('/lojas-vinculadas', (req, res) => {
   const lojas = db.prepare(`SELECT id, nome, negocio_nome, orbitta_vinculo FROM usuarios WHERE is_admin = 0 AND orbitta_vinculo IS NOT NULL AND orbitta_vinculo <> ''
-    ORDER BY COALESCE(negocio_nome, nome)`).all().filter((u) => vinculoDe(u)).map((u) => ({ id: u.id, nome: u.negocio_nome || u.nome }));
+    ORDER BY COALESCE(negocio_nome, nome)`).all().filter((u) => vinculoDe(u) && (!req.relLojas || req.relLojas.has(u.id))).map((u) => ({ id: u.id, nome: u.negocio_nome || u.nome }));
   res.json({ lojas });
 });
 admin.get('/conferencia/:id', async (req, res) => {

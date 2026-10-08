@@ -67,6 +67,19 @@ function exigirControle(req, res, next) {
     return res.status(403).json({ erro: 'Essa conta não tem acesso aos relatórios do checklist.' });
   }
   req.ehAdmin = !!usuario.is_admin;
+  // Cargo com "Ver e avaliar relatórios" e lojas marcadas: só aquelas lojas, sem mexer na configuração geral
+  if (!usuario.is_admin && usuario.cargo !== 'controle') {
+    const restritas = permissoes.lojasRestritas(req.usuarioId, 'relatorios');
+    if (restritas) {
+      req.relLojas = restritas;
+      if (/^\/(chaves|escopo|vinculos|sincronizar)(\/|$)/.test(req.path) || (req.method !== 'GET' && /^\/usuarios\/?$/.test(req.path))
+        || (req.method === 'DELETE' && /^\/usuarios\//.test(req.path))) {
+        return res.status(403).json({ erro: 'Seu cargo só acompanha as lojas dele. Essa parte é do administrador.' });
+      }
+      const m = req.path.match(/^\/(?:loja|vinculo|conferencia|alerta|resumo|usuarios|clientes)\/(\d+)/);
+      if (m && !restritas.has(Number(m[1]))) return res.status(403).json({ erro: 'Seu cargo não dá acesso a essa loja.' });
+    }
+  }
   next();
 }
 

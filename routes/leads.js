@@ -273,7 +273,7 @@ admin.get('/relatorio', (req, res) => {
   const { ini, fim } = intervalo(periodo, data, ate);
   const lojas = db.prepare(`SELECT id, nome, negocio_nome FROM usuarios
     WHERE is_admin = 0 AND (checklist_ativo = 1 OR id IN (SELECT DISTINCT usuario_id FROM leads WHERE data >= ? AND data <= ?))
-      AND cargo IN ('lojista', 'checklist') ORDER BY COALESCE(negocio_nome, nome)`).all(ini, fim);
+      AND cargo IN ('lojista', 'checklist') ORDER BY COALESCE(negocio_nome, nome)`).all(ini, fim).filter((l) => !req.relLojas || req.relLojas.has(l.id));
   const todas = lojas.map((l) => ({ ...l, ...juntarEnvios(somar(leadsDoPeriodo(l.id, ini, fim)), enviosDoPeriodo(l.id, ini, fim)) }));
   res.json({ periodo, ini, fim, hoje: hojeBrasilia(), lojas: todas,
     resumo: juntarEnvios(somar(lojas.flatMap((l) => leadsDoPeriodo(l.id, ini, fim))), lojas.flatMap((l) => enviosDoPeriodo(l.id, ini, fim))) });

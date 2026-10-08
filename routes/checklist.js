@@ -343,7 +343,8 @@ function usuarioChecklistJson(u) {
 
 admin.get('/usuarios', (req, res) => {
   const usuarios = db.prepare(`SELECT id, nome, email, negocio_nome, checklist_ativo, checklist_desde, criado_em, ultimo_acesso, cargo FROM usuarios
-    WHERE cargo IN (${req.ehAdmin ? "'checklist', 'controle'" : "'checklist'"}) AND is_admin = 0 ORDER BY cargo = 'controle' DESC, COALESCE(negocio_nome, nome)`).all();
+    WHERE cargo IN (${req.ehAdmin ? "'checklist', 'controle'" : "'checklist'"}) AND is_admin = 0 ORDER BY cargo = 'controle' DESC, COALESCE(negocio_nome, nome)`).all()
+    .filter((u) => !req.relLojas || req.relLojas.has(u.id));
   res.json({ usuarios: usuarios.map(usuarioChecklistJson) });
 });
 
@@ -428,7 +429,8 @@ admin.get('/relatorio', (req, res) => {
   const periodo = PERIODOS.includes(req.query.periodo) ? req.query.periodo : 'dia';
   const data = dataValida(req.query.data) ? req.query.data : hojeBrasilia();
   const { ini, fim } = intervalo(periodo, data, req.query.ate);
-  res.json({ periodo, ini, fim, hoje: hojeBrasilia(), total: TOTAL, lojas: resumo(lojasAtivas(), ini, fim) });
+  const lojas = lojasAtivas().filter((u) => !req.relLojas || req.relLojas.has(u.id));
+  res.json({ periodo, ini, fim, hoje: hojeBrasilia(), total: TOTAL, lojas: resumo(lojas, ini, fim) });
 });
 
 admin.get('/loja/:id/dia/:data', (req, res) => {
@@ -452,7 +454,7 @@ admin.patch('/loja/:id/dia/:data', (req, res) => {
 
 admin.get('/arquivo/:id', (req, res) => {
   const r = db.prepare('SELECT * FROM checklist_arquivos WHERE id = ?').get(req.params.id);
-  if (!r) return res.status(404).json({ erro: 'Arquivo não encontrado.' });
+  if (!r || (req.relLojas && !req.relLojas.has(r.usuario_id))) return res.status(404).json({ erro: 'Arquivo não encontrado.' });
   enviarArquivo(res, r);
 });
 
