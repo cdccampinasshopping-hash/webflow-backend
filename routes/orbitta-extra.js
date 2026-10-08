@@ -676,7 +676,7 @@ function redesVisiveis(req) {
   const todas = permissoesLib.todasLojas();
   const nomes = new Map(todas.map((l) => [l.id, l.nome]));
   const cargos = req.redeLojas
-    ? permissoesLib.cargosDe(req.quemVe || req.usuarioId).filter((c) => c.permissoes.includes('rede') && c.lojas.length)
+    ? permissoesLib.cargosDe(req.quemVe || req.usuarioId).filter((c) => (c.permissoes.includes('rede') || req.escopoTags) && c.lojas.length)
     : db.prepare('SELECT id, nome, cor, permissoes, lojas FROM cargos_tag ORDER BY ordem, id').all()
       .map((c) => ({ ...c, permissoes: permissoesLib.lerLista(c.permissoes), lojas: permissoesLib.lerIds(c.lojas) }))
       .filter((c) => c.permissoes.includes('rede') && c.lojas.length);
@@ -699,6 +699,8 @@ function redesVisiveis(req) {
       .filter((c) => numeroOdres(c.nome) != null && /^odres/i.test(String(c.nome).trim()))
       .forEach((c) => juntar({ ...c, lojas: permissoesLib.lerIds(c.lojas) }));
   }
+  // Lojas da rede: as marcadas nos cargos + as contas de loja com a tag da rede
+  for (const g of grupos.values()) permissoesLib.lojasDoGrupo(g.n).forEach((id) => { if (!g.lojas.includes(id) && (!req.redeLojas || req.redeLojas.has(id))) g.lojas.push(id); });
   const lista = [...[...grupos.values()].sort((a, b) => a.n - b.n), ...soltas];
   return lista.map((c) => ({ id: c.id, nome: c.nome, cor: c.cor, lojas: c.lojas.filter((id) => nomes.has(id)).map((id) => ({ id, nome: nomes.get(id) })) }));
 }

@@ -520,6 +520,11 @@ router.put('/clientes/:id/tags', (req, res) => {
     ids.forEach((id) => ins.run(u.id, id));
   })();
   permissoes.sincronizarChecklist(u.id, hojeBr());
+  // A loja ganhou a tag de uma rede (ex.: "Odres 1"): a Regional A dessa rede, se estava esperando lojas, é ligada
+  try {
+    const pend = db.prepare('SELECT cargo_id FROM cargos_pendentes').all().map((r) => r.cargo_id);
+    if (require('../jobs/cargos-odres').ativarPendentesComLojas()) pend.forEach((id) => ressincronizarDoCargo(id));
+  } catch (e) { /* segue */ }
   res.json({ tags: permissoes.cargosDe(u.id), permissoes: permissoes.permissoesDeTags(u.id) });
 });
 

@@ -101,10 +101,19 @@ function ativarRegionalPendente(cargoId) {
   if (!c) { db.prepare('DELETE FROM cargos_pendentes WHERE cargo_id = ?').run(cargoId); return false; }
   const atuais = permissoes.lerLista(c.permissoes);
   if (atuais.length) { db.prepare('DELETE FROM cargos_pendentes WHERE cargo_id = ?').run(cargoId); return false; } // o admin já escolheu à mão
-  if (!permissoes.lerIds(c.lojas).length) return false;
+  const nome = (db.prepare('SELECT nome FROM cargos_tag WHERE id = ?').get(cargoId) || {}).nome;
+  const n = permissoes.numeroOdres(nome);
+  if (!permissoes.lerIds(c.lojas).length && !(n != null && permissoes.lojasDoGrupo(n).length)) return false;
   db.prepare('UPDATE cargos_tag SET permissoes = ? WHERE id = ?').run(p.permissoes, cargoId);
   db.prepare('DELETE FROM cargos_pendentes WHERE cargo_id = ?').run(cargoId);
   return true;
 }
 
-module.exports = { criarCargosOdres, liberarAvaliacaoRegionalA, criarCargosOdresDemais, ativarRegionalPendente };
+// Alguma loja ganhou a tag da rede: liga as regionais pendentes que agora têm loja
+function ativarPendentesComLojas() {
+  let ligou = false;
+  try { for (const r of db.prepare('SELECT cargo_id FROM cargos_pendentes').all()) if (ativarRegionalPendente(r.cargo_id)) ligou = true; } catch (e) { /* sem tabela */ }
+  return ligou;
+}
+
+module.exports = { criarCargosOdres, liberarAvaliacaoRegionalA, criarCargosOdresDemais, ativarRegionalPendente, ativarPendentesComLojas };

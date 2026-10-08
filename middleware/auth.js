@@ -55,10 +55,14 @@ function exigirControle(req, res, next) {
   // Rede de lojas virou permissão de cargo (tipo tag do Discord): quem tem "Ver Rede de lojas" vê só as lojas do cargo
   // Vale também pra quem tem "Ver e avaliar relatórios": na Rede de lojas cada um vê só as lojas dos seus cargos (tag da rede)
   const temRede = permissoes.tem(req.usuarioId, 'rede'), temRel = permissoes.tem(req.usuarioId, 'relatorios');
-  if (usuario && !usuario.is_admin && leituraRede && (temRede || temRel) && usuario.cargo !== 'controle') {
+  // Conta "controle" com tag de rede (ex.: Odres 1 Regional A): fica limitada às lojas das tags
+  const escopo = usuario && !usuario.is_admin && usuario.cargo === 'controle' ? permissoes.escopoTags(req.usuarioId) : null;
+  if (usuario && !usuario.is_admin && leituraRede && ((temRede || temRel) && usuario.cargo !== 'controle' || escopo)) {
     req.ehAdmin = false;
-    req.redeLojas = new Set([Number(req.usuarioId), ...permissoes.lojasPor(req.usuarioId, 'rede').map((l) => l.id),
-      ...permissoes.lojasPor(req.usuarioId, 'relatorios').map((l) => l.id)]);
+    if (escopo) req.escopoTags = true;
+    req.redeLojas = escopo ? new Set([Number(req.usuarioId), ...escopo])
+      : new Set([Number(req.usuarioId), ...permissoes.lojasPor(req.usuarioId, 'rede').map((l) => l.id),
+        ...permissoes.lojasPor(req.usuarioId, 'relatorios').map((l) => l.id)]);
     const m = req.path.match(/^\/loja\/(\d+)/);
     if (m && !req.redeLojas.has(Number(m[1]))) return res.status(403).json({ erro: 'Seu cargo não dá acesso a essa loja.' });
     return next();
@@ -68,8 +72,8 @@ function exigirControle(req, res, next) {
   }
   req.ehAdmin = !!usuario.is_admin;
   // Cargo com "Ver e avaliar relatórios" e lojas marcadas: só aquelas lojas, sem mexer na configuração geral
-  if (!usuario.is_admin && usuario.cargo !== 'controle') {
-    const restritas = permissoes.lojasRestritas(req.usuarioId, 'relatorios');
+  if (!usuario.is_admin && (usuario.cargo !== 'controle' || escopo)) {
+    const restritas = escopo || permissoes.lojasRestritas(req.usuarioId, 'relatorios');
     if (restritas) {
       req.relLojas = restritas;
       if (/^\/(chaves|escopo|vinculos|sincronizar)(\/|$)/.test(req.path) || (req.method !== 'GET' && /^\/usuarios\/?$/.test(req.path))
