@@ -303,12 +303,35 @@ function montar(usuarioId, ini, fim) {
 
 // Cartões com comparação (período atual x anterior). O Orbitta já devolve os dois. Guarda 5 min.
 const cacheComparado = new Map();
+// Cache que responde na hora: até 5 min devolve o guardado; até 3 h devolve o guardado e atualiza por trás
+// (a próxima abertura já vem com o número novo); mais velho que isso, espera buscar.
+const FRESCO = 5 * 60 * 1000, VELHO_OK = 3 * 3600 * 1000;
+const buscando = new Map();
+function doCache(cache, chave, buscar) {
+  const c = cache.get(chave);
+  const atualizar = () => {
+    if (!buscando.has(cache) ) buscando.set(cache, new Map());
+    const b = buscando.get(cache);
+    if (!b.has(chave)) {
+      b.set(chave, Promise.resolve().then(buscar).then((dados) => {
+        cache.set(chave, { em: Date.now(), dados });
+        if (cache.size > 800) cache.delete(cache.keys().next().value);
+        return dados;
+      }).finally(() => b.delete(chave)));
+    }
+    return b.get(chave);
+  };
+  if (c && Date.now() - c.em < FRESCO) return Promise.resolve(c.dados);
+  if (c && Date.now() - c.em < VELHO_OK) { atualizar().catch(() => {}); return Promise.resolve(c.dados); }
+  return atualizar();
+}
 function painelComparado(u, ini, fim) { return comLoja(u, () => _painelComparado(u, ini, fim)); }
 async function _painelComparado(u, ini, fim) {
   const v = vinculoDe(u); if (!v || !orbitta.configurado()) return null;
   const chave = `${u.id}|${ini}|${fim}`;
-  const c = cacheComparado.get(chave);
-  if (c && Date.now() - c.em < 5 * 60 * 1000) return c.dados;
+  return doCache(cacheComparado, chave, () => buscarPainel(u, v, ini, fim, chave));
+}
+async function buscarPainel(u, v, ini, fim, chave) {
   const p = await orbitta.chamar('metricas_painel', { start_date: ini, end_date: fim, ...filtros(v) });
   const soma = (fn) => ['agentes', 'unidades'].reduce((t, lado) => t + (p && p[lado] ? Number(fn(p[lado]) || 0) : 0), 0);
   const par = (fa, fb) => ({ atual: soma(fa), anterior: soma(fb) });
@@ -324,8 +347,6 @@ async function _painelComparado(u, ini, fim) {
     vendas: par((x) => x.current_bookings && x.current_bookings.confirmed_count, (x) => x.prev_bookings && x.prev_bookings.confirmed_count),
     valor_vendido: par((x) => x.current_bookings && x.current_bookings.confirmed_total, (x) => x.prev_bookings && x.prev_bookings.confirmed_total),
   };
-  cacheComparado.set(chave, { em: Date.now(), dados });
-  if (cacheComparado.size > 500) cacheComparado.delete(cacheComparado.keys().next().value);
   return dados;
 }
 // Equipe direto do Orbitta para o período escolhido (dia, semana, mês ou datas livres), igual à tela de lá.
@@ -336,14 +357,18 @@ function equipeAoVivo(u, ini, fim) { return comLoja(u, () => _equipeAoVivo(u, in
 async function _equipeAoVivo(u, ini, fim) {
   const v = vinculoDe(u); if (!v || !orbitta.configurado()) return null;
   const chave = `${u.id}|${ini}|${fim}`;
-  const c = cacheEquipeAoVivo.get(chave);
-  if (c && Date.now() - c.em < 5 * 60 * 1000) return c.dados;
-  const r = await orbitta.chamar('metricas_equipe', { start_date: ini, end_date: fim, ...filtros(v) });
+  return doCache(cacheEquipeAoVivo, chave, async () => {
+    const r = await orbitta.chamar('metricas_equipe', { start_date: ini, end_date: fim, ...filtros(v) });
+    return dadosEquipe(r);
+  });
+}
+function dadosEquipe(r) {
   guardarNomes(r.membros); guardarNomes(r.membros_periodo_anterior);
-  const dados = { atual: resumirEquipe(r.membros), anterior: resumirEquipe(r.membros_periodo_anterior), membros_anterior: r.membros_periodo_anterior || [] };
-  cacheEquipeAoVivo.set(chave, { em: Date.now(), dados });
-  if (cacheEquipeAoVivo.size > 500) cacheEquipeAoVivo.delete(cacheEquipeAoVivo.keys().next().value);
-  return dados;
+  return { atual: resumirEquipe(r.membros), anterior: resumirEquipe(r.membros_periodo_anterior), membros_anterior: r.membros_periodo_anterior || [] };
+}
+// Quem já buscou metricas_equipe (ex.: a foto da equipe de cada minuto) guarda aqui e a tela não precisa buscar de novo
+function guardarEquipeAoVivo(u, ini, fim, r) {
+  cacheEquipeAoVivo.set(`${u.id}|${ini}|${fim}`, { em: Date.now(), dados: dadosEquipe(r) });
 }
 // 1ª resposta da loja = média dos vendedores pesada pelas conversas que cada um atendeu (agentes e Unidades separados)
 function resumirEquipe(lista) {
@@ -602,4 +627,4 @@ function apagarDoCliente(usuarioId) {
   db.prepare('DELETE FROM orbitta_respostas WHERE usuario_id = ?').run(usuarioId);
 }
 
-module.exports = { equipeAoVivo, aplicarEquipe, montarAoVivo, comLoja, registrarRespostas, temposResposta, metaDe, lojista, admin, iniciarSincronizacaoOrbitta, sincronizarDia, montar, resumirPainel, apagarDoCliente, painelComparado, vendedoresAnterior, vinculoDe, filtros, periodoAnterior };
+module.exports = { guardarEquipeAoVivo, equipeAoVivo, aplicarEquipe, montarAoVivo, comLoja, registrarRespostas, temposResposta, metaDe, lojista, admin, iniciarSincronizacaoOrbitta, sincronizarDia, montar, resumirPainel, apagarDoCliente, painelComparado, vendedoresAnterior, vinculoDe, filtros, periodoAnterior };

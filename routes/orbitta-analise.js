@@ -171,6 +171,7 @@ const salvarFoto = db.prepare('INSERT OR IGNORE INTO orbitta_equipe_foto (usuari
 async function fotografarEquipe(u, dia) {
   const v = ob.vinculoDe(u); if (!v) return;
   const r = await ob.comLoja(u, () => orbitta.chamar('metricas_equipe', { start_date: dia, end_date: dia, ...ob.filtros(v) }));
+  try { ob.guardarEquipeAoVivo(u, dia, dia, r); } catch (e) { /* só aproveita a busca */ }
   const em = new Date().toISOString();
   for (const m of r.membros || []) {
     if (!m.membro_id) continue;
@@ -433,15 +434,18 @@ function iniciarAnalise() {
   setTimeout(rodar, 3 * 60 * 1000);
   setInterval(rodar, 30 * 60 * 1000);
   // Foto da equipe a cada minuto (pra saber quem mandou cada mensagem de reativação)
-  let fotografando = false;
+  // e, a cada 4 minutos, deixa pronto o painel do dia de cada loja (Rede de lojas e Análise abrem na hora)
+  let fotografando = false, voltas = 0;
   setInterval(async () => {
     if (fotografando) return; fotografando = true;
+    const aquecer = voltas++ % 4 === 0;
     try {
       const hoje = hojeBrasilia();
       const lista = db.prepare(`SELECT id, orbitta_vinculo FROM usuarios WHERE orbitta_vinculo IS NOT NULL AND orbitta_vinculo <> ''`).all();
       for (const u of lista) {
         if (!ob.vinculoDe(u)) continue;
         await fotografarEquipe(u, hoje).catch((e) => console.error('Foto equipe Orbitta:', e.message));
+        if (aquecer) await ob.painelComparado(u, hoje, hoje).catch(() => null);
       }
     } finally { fotografando = false; }
   }, 60 * 1000);
