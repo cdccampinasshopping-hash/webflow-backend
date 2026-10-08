@@ -56,8 +56,8 @@ async function listarAgendamentos(f, ini, fim) {
 }
 
 /* ---------------- Reativação por vendedor ----------------
-   Conta +1 quando o vendedor (atendente) manda mensagem pra um cliente que estava há 7 dias ou mais sem conversa
-   (a mensagem anterior da conversa, de qualquer um, tem 7+ dias). O Orbitta não diz qual vendedor mandou a mensagem;
+   Conta +1 quando o vendedor (atendente) manda mensagem pra um cliente que estava há 2 dias ou mais (DIAS_PARADO) sem conversa
+   (a mensagem anterior da conversa, de qualquer um, tem 2+ dias). O Orbitta não diz qual vendedor mandou a mensagem;
    o vendedor é reconhecido pelo nome na mensagem ("sou o Nicolas"), pelo agendamento marcado no dia ou, por último,
    por um nome da equipe citado na mensagem. */
 db.exec(`CREATE TABLE IF NOT EXISTS orbitta_reativacoes (
@@ -71,7 +71,9 @@ db.exec(`CREATE TABLE IF NOT EXISTS orbitta_reativacoes (
 )`);
 db.exec('CREATE INDEX IF NOT EXISTS idx_orb_reat_dia ON orbitta_reativacoes (usuario_id, dia)');
 try { db.exec('ALTER TABLE orbitta_conversas ADD COLUMN reat_checada TEXT'); } catch (e) { /* já existe */ }
-const DIAS_PARADO = 7;
+const DIAS_PARADO = 2;
+// Marca de conversa já lida: muda junto com DIAS_PARADO, pra reler o dia quando a regra mudar
+const MARCA_REAT = '|d' + DIAS_PARADO;
 // Trecho da conversa (mensagem antes da parada + as mensagens depois), pra mostrar mensagem por mensagem no painel
 try { db.exec('ALTER TABLE orbitta_reativacoes ADD COLUMN trecho TEXT'); db.exec('UPDATE orbitta_conversas SET reat_checada = NULL'); } catch (e) { /* já existe */ }
 const salvarReat = db.prepare(`INSERT INTO orbitta_reativacoes (usuario_id, conversa_id, msg_em, dia, parado_dias, texto, trecho) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -79,7 +81,7 @@ const salvarReat = db.prepare(`INSERT INTO orbitta_reativacoes (usuario_id, conv
 const msgCurta = (m) => ({ de: m.de, data: m.data, tipo: m.tipo || 'text', texto: String(m.texto || '').slice(0, 700) });
 const marcarReat = db.prepare('UPDATE orbitta_conversas SET reat_checada = ? WHERE usuario_id = ? AND data = ? AND conversa_id = ?');
 
-// Acha, numa lista de mensagens em ordem, as do vendedor que vieram depois de 7+ dias sem conversa
+// Acha, numa lista de mensagens em ordem, as do vendedor que vieram depois de 2+ dias sem conversa
 function reativacoesNasMensagens(msgs, anterior) {
   const out = [];
   for (let i = 0; i < msgs.length; i++) {
@@ -89,7 +91,7 @@ function reativacoesNasMensagens(msgs, anterior) {
     if (!p) continue;
     const dias = (new Date(m.data) - new Date(p.data)) / 86400000;
     if (dias < DIAS_PARADO) continue;
-    // Mensagens depois da parada (até a próxima parada de 7+ dias), no máximo 15
+    // Mensagens depois da parada (até a próxima parada de 2+ dias), no máximo 15
     const depois = [];
     for (let j = i; j < msgs.length && depois.length < 15; j++) {
       if (j > i && (new Date(msgs[j].data) - new Date(msgs[j - 1].data)) / 86400000 >= DIAS_PARADO) break;
@@ -102,11 +104,11 @@ function reativacoesNasMensagens(msgs, anterior) {
 
 async function lerReativacoes(u, dia) {
   const inicio = new Date(dia + 'T03:00:00Z');
-  // Só conversas que começaram há 7+ dias podem ter ficado 7 dias paradas
+  // Só conversas que começaram há 2+ dias podem ter ficado 2 dias paradas
   const limite = new Date(inicio.getTime() - DIAS_PARADO * 86400000).toISOString();
   const lista = db.prepare(`SELECT conversa_id, origem, ultima_mensagem FROM orbitta_conversas WHERE usuario_id = ? AND data = ?
-    AND (primeira_mensagem IS NULL OR primeira_mensagem < ?) AND (reat_checada IS NULL OR reat_checada <> ultima_mensagem)
-    ORDER BY ultima_mensagem DESC LIMIT 60`).all(u.id, dia, limite);
+    AND (primeira_mensagem IS NULL OR primeira_mensagem < ?) AND (reat_checada IS NULL OR reat_checada <> ultima_mensagem || ?)
+    ORDER BY ultima_mensagem DESC LIMIT 60`).all(u.id, dia, limite, MARCA_REAT);
   for (const c of lista) {
     try {
       const origem = c.origem === 'unidade' ? 'unidade' : 'agente';
@@ -122,7 +124,7 @@ async function lerReativacoes(u, dia) {
       for (const { m, dias, trecho } of reativacoesNasMensagens(msgs, anterior)) {
         salvarReat.run(u.id, c.conversa_id, new Date(m.data).toISOString(), diaBrasilia(m.data), dias, String(m.texto || '').slice(0, 600), JSON.stringify(trecho));
       }
-      marcarReat.run(c.ultima_mensagem, u.id, dia, c.conversa_id);
+      marcarReat.run(c.ultima_mensagem + MARCA_REAT, u.id, dia, c.conversa_id);
     } catch (e) { /* tenta na próxima */ }
     await espera(80);
   }
@@ -275,7 +277,7 @@ async function _analiseLoja(u, hoje) {
   const m = ob.montar(u.id, ontem, ontem);
   const vendDoDia = new Map();
   for (const a of ags) if (a.conversa_id && a.vendedor_id) vendDoDia.set(a.conversa_id, a.vendedor_id);
-  // Lê as conversas do dia atrás de reativações (vendedor mandou mensagem pra cliente parado há 7+ dias)
+  // Lê as conversas do dia atrás de reativações (vendedor mandou mensagem pra cliente parado há 2+ dias)
   await lerReativacoes(u, ontem).catch(() => {});
   // Só entra quem está na equipe do Orbitta naquele dia. O Orbitta não diz quem atendeu cada conversa;
   // o painel usa o vendedor do último agendamento do cliente, então um cliente antigo que voltou
