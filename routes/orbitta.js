@@ -328,6 +328,66 @@ async function _painelComparado(u, ini, fim) {
   if (cacheComparado.size > 500) cacheComparado.delete(cacheComparado.keys().next().value);
   return dados;
 }
+// Equipe direto do Orbitta para o período escolhido (dia, semana, mês ou datas livres), igual à tela de lá.
+// Os números de cada vendedor (conversas, agendamentos, vendas, valor, transferências, 1ª resposta)
+// e a 1ª resposta da loja passam a vir daqui, em vez de somar os dias guardados. Guarda 5 min.
+const cacheEquipeAoVivo = new Map();
+function equipeAoVivo(u, ini, fim) { return comLoja(u, () => _equipeAoVivo(u, ini, fim)); }
+async function _equipeAoVivo(u, ini, fim) {
+  const v = vinculoDe(u); if (!v || !orbitta.configurado()) return null;
+  const chave = `${u.id}|${ini}|${fim}`;
+  const c = cacheEquipeAoVivo.get(chave);
+  if (c && Date.now() - c.em < 5 * 60 * 1000) return c.dados;
+  const r = await orbitta.chamar('metricas_equipe', { start_date: ini, end_date: fim, ...filtros(v) });
+  guardarNomes(r.membros); guardarNomes(r.membros_periodo_anterior);
+  const dados = { atual: resumirEquipe(r.membros), anterior: resumirEquipe(r.membros_periodo_anterior), membros_anterior: r.membros_periodo_anterior || [] };
+  cacheEquipeAoVivo.set(chave, { em: Date.now(), dados });
+  if (cacheEquipeAoVivo.size > 500) cacheEquipeAoVivo.delete(cacheEquipeAoVivo.keys().next().value);
+  return dados;
+}
+// 1ª resposta da loja = média dos vendedores pesada pelas conversas que cada um atendeu (agentes e Unidades separados)
+function resumirEquipe(lista) {
+  const membros = {};
+  let soma = 0, n = 0;
+  for (const m of lista || []) {
+    const ca = m.conversas_atendidas_agentes || 0, cu = m.conversas_atendidas_unidades || 0;
+    const ra = m.primeira_resposta_media_seg_agentes, ru = m.primeira_resposta_media_seg_unidades;
+    let s = 0, k = 0;
+    if (ra != null && ca) { s += ra * ca; k += ca; }
+    if (ru != null && cu) { s += ru * cu; k += cu; }
+    if (!k && (ra ?? ru) != null) { s = ra ?? ru; k = 1; }
+    soma += s; n += k;
+    membros[m.membro_id] = {
+      nome: m.nome, conversas: ca + cu, mensagens: (m.mensagens_enviadas_agentes || 0) + (m.mensagens_enviadas_unidades || 0),
+      agendamentos: m.agendamentos || 0, vendas: m.vendas || 0, valor_vendido: Math.round((Number(m.valor_vendido) || 0) * 100) / 100,
+      transferencias: m.transferencias || 0, primeira_resposta_seg: k ? Math.round(s / k) : null,
+    };
+  }
+  return { membros, primeira_resposta_seg: n ? Math.round(soma / n) : null };
+}
+// Troca os números de vendedor do que foi guardado pelos do Orbitta no período (mantém leads pegos/novos/reativações)
+function aplicarEquipe(m, eq) {
+  if (!m || !eq || !eq.atual) return m;
+  const porId = new Map(m.vendedores.map((v) => [v.id, v]));
+  for (const [id, x] of Object.entries(eq.atual.membros)) {
+    const v = porId.get(id) || { id, nome: x.nome, pegos: 0, novos: 0, reativacoes: 0 };
+    Object.assign(v, { nome: x.nome || v.nome, conversas: x.conversas, mensagens: x.mensagens, agendamentos: x.agendamentos, vendas: x.vendas,
+      valor_vendido: x.valor_vendido, transferencias: x.transferencias, primeira_resposta_seg: x.primeira_resposta_seg });
+    porId.set(id, v);
+  }
+  for (const [id, v] of porId) if (!eq.atual.membros[id]) Object.assign(v, { conversas: 0, mensagens: 0, agendamentos: 0, vendas: 0, valor_vendido: 0, transferencias: 0, primeira_resposta_seg: null });
+  m.vendedores = [...porId.values()].filter((v) => v.conversas || v.agendamentos || v.vendas || v.pegos || v.transferencias)
+    .sort((a, b) => b.pegos - a.pegos || b.conversas - a.conversas);
+  m.loja.vendas = m.vendedores.reduce((t, v) => t + (v.vendas || 0), 0);
+  m.primeira_resposta = { atual_seg: eq.atual.primeira_resposta_seg, anterior_seg: eq.anterior.primeira_resposta_seg };
+  m.equipe_ao_vivo = true;
+  return m;
+}
+async function montarAoVivo(u, ini, fim) {
+  const m = montar(u.id, ini, fim);
+  try { aplicarEquipe(m, await equipeAoVivo(u, ini, fim)); } catch (e) { m.equipe_erro = e.message; }
+  return m;
+}
 async function comComparado(u, ini, fim) {
   try { return await painelComparado(u, ini, fim); } catch (e) { return null; }
 }
@@ -341,22 +401,13 @@ function periodoAnterior(periodo, ini, fim) {
 }
 
 // Cada vendedor no período anterior: métricas do Orbitta (vêm prontas) + leads que pegou (do que já foi sincronizado)
-const cacheEquipe = new Map();
 function vendedoresAnterior(u, periodo, ini, fim) { return comLoja(u, () => _vendedoresAnterior(u, periodo, ini, fim)); }
 async function _vendedoresAnterior(u, periodo, ini, fim) {
   const v = vinculoDe(u); if (!v || !orbitta.configurado()) return null;
   const ant = periodoAnterior(periodo, ini, fim);
   const out = {};
   try {
-    const chave = `${u.id}|${ini}|${fim}`;
-    let eq = cacheEquipe.get(chave);
-    if (!eq || Date.now() - eq.em > 10 * 60 * 1000) {
-      const r = await orbitta.chamar('metricas_equipe', { start_date: ini, end_date: fim, ...filtros(v) });
-      eq = { em: Date.now(), membros: r.membros_periodo_anterior || [] };
-      guardarNomes(r.membros); guardarNomes(r.membros_periodo_anterior);
-      cacheEquipe.set(chave, eq);
-      if (cacheEquipe.size > 500) cacheEquipe.delete(cacheEquipe.keys().next().value);
-    }
+    const eq = { membros: ((await equipeAoVivo(u, ini, fim)) || {}).membros_anterior || [] };
     for (const m of eq.membros) {
       out[m.membro_id] = {
         conversas: (m.conversas_atendidas_agentes || 0) + (m.conversas_atendidas_unidades || 0),
@@ -389,7 +440,7 @@ lojista.get('/', async (req, res) => {
   const { periodo, data, ate } = lerPeriodo(req.query, 'dia');
   const { ini, fim } = intervalo(periodo, data, ate);
   const ant = periodoAnterior(periodo, ini, fim);
-  const montado = montar(u.id, ini, fim);
+  const montado = await montarAoVivo(u, ini, fim);
   const respAnt = temposResposta(u.id, ant.ini, ant.fim);
   res.json({ vinculado: true, configurado: orbitta.configurado(), periodo, ini, fim, hoje: hojeBrasilia(), ...montado,
     resposta: { ...montado.resposta, anterior_seg: respAnt.media_seg }, meta: metaDe(u),
@@ -411,7 +462,7 @@ lojista.post('/atualizar', async (req, res) => {
   if (!u || (!u.checklist_ativo && !req.vendoOutraLoja) || !vinculoDe(u)) return res.status(403).json({ erro: 'Loja não vinculada ao Orbitta.' });
   if (Date.now() - (ultimaManual.get(u.id) || 0) < 120000) return res.status(429).json({ erro: 'Acabou de atualizar. Tente de novo em 2 minutos.' });
   ultimaManual.set(u.id, Date.now());
-  for (const c of [cacheComparado, cacheEquipe]) for (const k of [...c.keys()]) if (k.startsWith(u.id + '|')) c.delete(k);
+  for (const c of [cacheComparado, cacheEquipeAoVivo]) for (const k of [...c.keys()]) if (k.startsWith(u.id + '|')) c.delete(k);
   try { await sincronizarDia(u, hojeBrasilia()); res.json({ ok: true }); }
   catch (e) { res.status(502).json({ erro: e.message }); }
 });
@@ -502,7 +553,7 @@ admin.get('/loja/:id', async (req, res) => {
   if (!vinculoDe(u)) return res.json({ vinculado: false, loja: { id: u.id, nome: u.nome, negocio_nome: u.negocio_nome } });
   const { periodo, data, ate } = lerPeriodo(req.query, 'dia');
   const { ini, fim } = intervalo(periodo, data, ate);
-  res.json({ vinculado: true, loja: { id: u.id, nome: u.nome, negocio_nome: u.negocio_nome }, periodo, ini, fim, hoje: hojeBrasilia(), ...montar(u.id, ini, fim), comparado: await comComparado(u, ini, fim), anterior: await vendedoresAnterior(u, periodo, ini, fim).catch(() => null) });
+  res.json({ vinculado: true, loja: { id: u.id, nome: u.nome, negocio_nome: u.negocio_nome }, periodo, ini, fim, hoje: hojeBrasilia(), ...(await montarAoVivo(u, ini, fim)), comparado: await comComparado(u, ini, fim), anterior: await vendedoresAnterior(u, periodo, ini, fim).catch(() => null) });
 });
 
 // ---------------- conferência: Orbitta agora x o que o painel tem guardado ----------------
@@ -541,7 +592,7 @@ admin.post('/conferencia/:id/sincronizar', async (req, res) => {
   const u = db.prepare('SELECT id, orbitta_vinculo FROM usuarios WHERE id = ?').get(req.params.id);
   if (!u || !vinculoDe(u)) return res.status(400).json({ erro: 'Loja não vinculada ao Orbitta.' });
   const data = dataValida((req.body || {}).data) ? req.body.data : hojeBrasilia();
-  for (const c of [cacheComparado, cacheEquipe]) for (const k of [...c.keys()]) if (k.startsWith(u.id + '|')) c.delete(k);
+  for (const c of [cacheComparado, cacheEquipeAoVivo]) for (const k of [...c.keys()]) if (k.startsWith(u.id + '|')) c.delete(k);
   try { await sincronizarDia(u, data); res.json({ ok: true }); } catch (e) { res.status(502).json({ erro: e.message }); }
 });
 
@@ -551,4 +602,4 @@ function apagarDoCliente(usuarioId) {
   db.prepare('DELETE FROM orbitta_respostas WHERE usuario_id = ?').run(usuarioId);
 }
 
-module.exports = { comLoja, registrarRespostas, temposResposta, metaDe, lojista, admin, iniciarSincronizacaoOrbitta, sincronizarDia, montar, resumirPainel, apagarDoCliente, painelComparado, vendedoresAnterior, vinculoDe, filtros, periodoAnterior };
+module.exports = { equipeAoVivo, aplicarEquipe, montarAoVivo, comLoja, registrarRespostas, temposResposta, metaDe, lojista, admin, iniciarSincronizacaoOrbitta, sincronizarDia, montar, resumirPainel, apagarDoCliente, painelComparado, vendedoresAnterior, vinculoDe, filtros, periodoAnterior };

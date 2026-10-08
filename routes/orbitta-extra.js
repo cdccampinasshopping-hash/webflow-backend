@@ -558,10 +558,12 @@ async function _evolucao(u, dias) {
 
 // ---------------- 3) Painel da rede ----------------
 async function linhaRede(u, periodo, ini, fim) {
-  const m = ob.montar(u.id, ini, fim);
+  // Tudo do período escolhido vem direto do Orbitta (painel + equipe); o guardado só entra se o Orbitta falhar
+  const m = await ob.montarAoVivo(u, ini, fim);
   let comp = null; try { comp = await ob.painelComparado(u, ini, fim); } catch (e) { /* sem comparação */ }
   let resp = 0, respN = 0;
   m.vendedores.forEach((v) => { if (v.primeira_resposta_seg != null && v.conversas) { resp += v.primeira_resposta_seg * v.conversas; respN += v.conversas; } });
+  const respLoja = m.primeira_resposta ? m.primeira_resposta.atual_seg : (respN ? Math.round(resp / respN) : null);
   let checklist = null;
   if (u.checklist_ativo) { try { const r = ck.resumo([{ id: u.id, nome: u.nome, negocio_nome: u.negocio_nome, checklist_desde: u.checklist_desde }], ini, fim)[0]; checklist = { esperadas: r.esperadas, feitas: r.feitas, hoje: (r.dias.find((d) => d.em_andamento) || null) }; } catch (e) { /* sem checklist */ } }
   let whatsapp = 0; try { whatsapp = db.prepare('SELECT COUNT(*) AS n FROM lead_envios WHERE usuario_id = ? AND data >= ? AND data <= ?').get(u.id, ini, fim).n; } catch (e) { /* sem tabela */ }
@@ -575,7 +577,8 @@ async function linhaRede(u, periodo, ini, fim) {
     comparecimentos: g('comparecimentos') || { atual: 0, anterior: null },
     vendas: g('vendas') || { atual: m.loja.vendas, anterior: null },
     valor: g('valor_vendido') || { atual: m.loja.vendas_valor, anterior: null },
-    primeira_resposta_seg: respN ? Math.round(resp / respN) : null,
+    primeira_resposta_seg: respLoja,
+    primeira_resposta_anterior_seg: m.primeira_resposta ? m.primeira_resposta.anterior_seg : null,
     sem_resposta: fim >= hojeBrasilia() ? semResposta(u).length : null,
     checklist, whatsapp, atualizado_em: m.atualizado_em,
   };
