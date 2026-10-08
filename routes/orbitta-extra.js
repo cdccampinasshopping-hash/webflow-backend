@@ -5,6 +5,7 @@
 //  4) Visitas pra confirmar (agendamentos de hoje e amanhã) com WhatsApp
 //  5) Evolução dos últimos 30 dias
 const express = require('express');
+const permissoesLib = require('../lib/permissoes');
 const db = require('../db');
 const orbitta = require('../lib/orbitta');
 const { enviarEmail, emailInterno } = require('../email');
@@ -659,9 +660,28 @@ admin.get('/rede', async (req, res) => {
     return { id: u.id, nome: u.negocio_nome || u.nome, sem_orbitta: true, checklist };
   });
   notasDaRede(linhas);
-  const ve = (l) => !req.redeLojas || req.redeLojas.has(Number(l.id));
-  res.json({ periodo, ini, fim, hoje: hojeBrasilia(), lojas: linhas.filter(ve), so_checklist: soChecklist.filter(ve), configurado: orbitta.configurado() });
+  // ?rede=<id do cargo>: só as lojas daquela rede (botão da rede no menu)
+  let daRede = null;
+  if (req.query.rede) {
+    const r = redesVisiveis(req).find((x) => String(x.id) === String(req.query.rede));
+    if (!r) return res.status(403).json({ erro: 'Seu cargo não dá acesso a essa rede.' });
+    daRede = new Set(r.lojas.map((l) => l.id));
+  }
+  const ve = (l) => (!req.redeLojas || req.redeLojas.has(Number(l.id))) && (!daRede || daRede.has(Number(l.id)));
+  res.json({ periodo, ini, fim, hoje: hojeBrasilia(), lojas: linhas.filter(ve), so_checklist: soChecklist.filter(ve), configurado: orbitta.configurado(), rede: req.query.rede || null });
 });
+// Redes = cargos com "Ver Rede de lojas" e lojas marcadas. Admin e controle veem todas; os outros, só as redes dos seus cargos.
+function redesVisiveis(req) {
+  const todas = permissoesLib.todasLojas();
+  const nomes = new Map(todas.map((l) => [l.id, l.nome]));
+  const cargos = req.redeLojas
+    ? permissoesLib.cargosDe(req.quemVe || req.usuarioId).filter((c) => c.permissoes.includes('rede') && c.lojas.length)
+    : db.prepare('SELECT id, nome, cor, permissoes, lojas FROM cargos_tag ORDER BY ordem, id').all()
+      .map((c) => ({ ...c, permissoes: permissoesLib.lerLista(c.permissoes), lojas: permissoesLib.lerIds(c.lojas) }))
+      .filter((c) => c.permissoes.includes('rede') && c.lojas.length);
+  return cargos.map((c) => ({ id: c.id, nome: c.nome, cor: c.cor, lojas: c.lojas.filter((id) => nomes.has(id)).map((id) => ({ id, nome: nomes.get(id) })) }));
+}
+admin.get('/redes', (req, res) => res.json({ redes: redesVisiveis(req) }));
 admin.get('/loja/:id/sem-resposta', (req, res) => {
   const u = lojaPorId(req.params.id); if (!u || !ob.vinculoDe(u)) return res.json({ vinculado: false, lista: [] });
   res.json({ vinculado: true, minutos: configDe(u).minutos, lista: semResposta(u) });

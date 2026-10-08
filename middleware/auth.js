@@ -46,16 +46,19 @@ function exigirComercial(req, res, next) {
 
 // Relatórios do checklist: admin, quem tem o cargo "controle" ou um cargo (tag) com a permissão "relatorios"
 // Quem preenche o checklist também vê a Rede de lojas (só leitura: o ranking e o detalhe de cada loja)
-const LEITURA_REDE = [/^\/rede\/?$/, /^\/loja\/\d+\/?$/, /^\/loja\/\d+\/(evolucao|sem-resposta)\/?$/];
+const LEITURA_REDE = [/^\/rede\/?$/, /^\/redes\/?$/, /^\/loja\/\d+\/?$/, /^\/loja\/\d+\/(evolucao|sem-resposta)\/?$/];
 function exigirControle(req, res, next) {
   const usuario = db.prepare('SELECT is_admin, cargo FROM usuarios WHERE id = ?').get(req.usuarioId);
   const leituraRede = req.method === 'GET' && (
     (req.baseUrl === '/api/admin/orbitta' && LEITURA_REDE.some((r) => r.test(req.path)))
     || (req.baseUrl === '/api/admin/leads' && /^\/loja\/\d+\/?$/.test(req.path)));
   // Rede de lojas virou permissão de cargo (tipo tag do Discord): quem tem "Ver Rede de lojas" vê só as lojas do cargo
-  if (usuario && !usuario.is_admin && leituraRede && permissoes.tem(req.usuarioId, 'rede') && !permissoes.tem(req.usuarioId, 'relatorios') && usuario.cargo !== 'controle') {
+  // Vale também pra quem tem "Ver e avaliar relatórios": na Rede de lojas cada um vê só as lojas dos seus cargos (tag da rede)
+  const temRede = permissoes.tem(req.usuarioId, 'rede'), temRel = permissoes.tem(req.usuarioId, 'relatorios');
+  if (usuario && !usuario.is_admin && leituraRede && (temRede || temRel) && usuario.cargo !== 'controle') {
     req.ehAdmin = false;
-    req.redeLojas = new Set([Number(req.usuarioId), ...permissoes.lojasPor(req.usuarioId, 'rede').map((l) => l.id)]);
+    req.redeLojas = new Set([Number(req.usuarioId), ...permissoes.lojasPor(req.usuarioId, 'rede').map((l) => l.id),
+      ...permissoes.lojasPor(req.usuarioId, 'relatorios').map((l) => l.id)]);
     const m = req.path.match(/^\/loja\/(\d+)/);
     if (m && !req.redeLojas.has(Number(m[1]))) return res.status(403).json({ erro: 'Seu cargo não dá acesso a essa loja.' });
     return next();
