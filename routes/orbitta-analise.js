@@ -8,6 +8,9 @@
 // e só buscamos a ficha dos agendamentos que ainda não conhecemos.
 const express = require('express');
 const db = require('../db');
+// Comandos do banco preparados uma vez só e reaproveitados (evita criar e jogar fora a cada minuto)
+const _st = new Map();
+const st = (sql) => { let s = _st.get(sql); if (!s) { s = db.prepare(sql); _st.set(sql, s); } return s; };
 const orbitta = require('../lib/orbitta');
 const ob = require('./orbitta');
 const permissoes = require('../lib/permissoes');
@@ -34,14 +37,14 @@ const espera = (ms) => new Promise((ok) => setTimeout(ok, ms));
 const diaBrasilia = (iso) => { const t = new Date(iso); return isNaN(t) ? null : new Date(t.getTime() - 3 * 3600000).toISOString().slice(0, 10); };
 const cancelado = (a) => /cancel/i.test(String(a.status || '')) || /cancel/i.test(String(a.situacao || ''));
 
-const salvar = db.prepare(`INSERT INTO orbitta_agendamentos (id, usuario_id, conversa_id, criado_em, criado_dia, vendedor_id, data_agendada, status, lido_em)
+const salvar = st(`INSERT INTO orbitta_agendamentos (id, usuario_id, conversa_id, criado_em, criado_dia, vendedor_id, data_agendada, status, lido_em)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   ON CONFLICT (id) DO UPDATE SET usuario_id = excluded.usuario_id, vendedor_id = excluded.vendedor_id, data_agendada = excluded.data_agendada,
     status = excluded.status, lido_em = excluded.lido_em`);
-const conhecido = db.prepare('SELECT 1 FROM orbitta_agendamentos WHERE id = ?');
-const nomeDe = db.prepare('SELECT nome FROM orbitta_membros WHERE id = ?');
-const guardarPrimeira = db.prepare('UPDATE orbitta_agendamentos SET primeira_msg = ? WHERE conversa_id = ?');
-const primeiraDaConversa = db.prepare('SELECT MIN(primeira_mensagem) AS p FROM orbitta_conversas WHERE usuario_id = ? AND conversa_id = ?');
+const conhecido = st('SELECT 1 FROM orbitta_agendamentos WHERE id = ?');
+const nomeDe = st('SELECT nome FROM orbitta_membros WHERE id = ?');
+const guardarPrimeira = st('UPDATE orbitta_agendamentos SET primeira_msg = ? WHERE conversa_id = ?');
+const primeiraDaConversa = st('SELECT MIN(primeira_mensagem) AS p FROM orbitta_conversas WHERE usuario_id = ? AND conversa_id = ?');
 
 // Todos os agendamentos com data marcada no intervalo (página por página)
 async function listarAgendamentos(f, ini, fim) {
@@ -76,10 +79,10 @@ const DIAS_PARADO = 2;
 const MARCA_REAT = '|d' + DIAS_PARADO;
 // Trecho da conversa (mensagem antes da parada + as mensagens depois), pra mostrar mensagem por mensagem no painel
 try { db.exec('ALTER TABLE orbitta_reativacoes ADD COLUMN trecho TEXT'); db.exec('UPDATE orbitta_conversas SET reat_checada = NULL'); } catch (e) { /* já existe */ }
-const salvarReat = db.prepare(`INSERT INTO orbitta_reativacoes (usuario_id, conversa_id, msg_em, dia, parado_dias, texto, trecho) VALUES (?, ?, ?, ?, ?, ?, ?)
+const salvarReat = st(`INSERT INTO orbitta_reativacoes (usuario_id, conversa_id, msg_em, dia, parado_dias, texto, trecho) VALUES (?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT (usuario_id, conversa_id, msg_em) DO UPDATE SET trecho = excluded.trecho`);
 const msgCurta = (m) => ({ de: m.de, data: m.data, tipo: m.tipo || 'text', texto: String(m.texto || '').slice(0, 700) });
-const marcarReat = db.prepare('UPDATE orbitta_conversas SET reat_checada = ? WHERE usuario_id = ? AND data = ? AND conversa_id = ?');
+const marcarReat = st('UPDATE orbitta_conversas SET reat_checada = ? WHERE usuario_id = ? AND data = ? AND conversa_id = ?');
 
 // Acha, numa lista de mensagens em ordem, as do vendedor que vieram depois de 2+ dias sem conversa
 function reativacoesNasMensagens(msgs, anterior) {
@@ -118,7 +121,7 @@ function lerReativacoesEmFundo(u, dia) {
 }
 function faltaLerReat(usuarioId, dia) {
   const limite = new Date(new Date(dia + 'T03:00:00Z').getTime() - DIAS_PARADO * 86400000).toISOString();
-  return db.prepare(`SELECT COUNT(*) AS n FROM orbitta_conversas WHERE usuario_id = ? AND data = ?
+  return st(`SELECT COUNT(*) AS n FROM orbitta_conversas WHERE usuario_id = ? AND data = ?
     AND (primeira_mensagem IS NULL OR primeira_mensagem < ?) AND (reat_checada IS NULL OR reat_checada <> ultima_mensagem || ?)`).get(usuarioId, dia, limite, MARCA_REAT).n;
 }
 const falhou = new Set();
@@ -127,7 +130,7 @@ async function lerReativacoes(u, dia) {
   const inicio = new Date(dia + 'T03:00:00Z');
   // Só conversas que começaram há 2+ dias podem ter ficado 2 dias paradas
   const limite = new Date(inicio.getTime() - DIAS_PARADO * 86400000).toISOString();
-  const lista = db.prepare(`SELECT conversa_id, origem, ultima_mensagem FROM orbitta_conversas WHERE usuario_id = ? AND data = ?
+  const lista = st(`SELECT conversa_id, origem, ultima_mensagem FROM orbitta_conversas WHERE usuario_id = ? AND data = ?
     AND (primeira_mensagem IS NULL OR primeira_mensagem < ?) AND (reat_checada IS NULL OR reat_checada <> ultima_mensagem || ?)
     ORDER BY ultima_mensagem DESC LIMIT 60`).all(u.id, dia, limite, MARCA_REAT);
   for (const c of lista) {
@@ -166,8 +169,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS orbitta_equipe_foto (
   PRIMARY KEY (usuario_id, em, membro_id)
 )`);
 db.exec('CREATE INDEX IF NOT EXISTS idx_orb_foto_dia ON orbitta_equipe_foto (usuario_id, dia, membro_id, em)');
-const ultimaFoto = db.prepare('SELECT conversas FROM orbitta_equipe_foto WHERE usuario_id = ? AND dia = ? AND membro_id = ? ORDER BY em DESC LIMIT 1');
-const salvarFoto = db.prepare('INSERT OR IGNORE INTO orbitta_equipe_foto (usuario_id, dia, em, membro_id, conversas) VALUES (?, ?, ?, ?, ?)');
+const ultimaFoto = st('SELECT conversas FROM orbitta_equipe_foto WHERE usuario_id = ? AND dia = ? AND membro_id = ? ORDER BY em DESC LIMIT 1');
+const salvarFoto = st('INSERT OR IGNORE INTO orbitta_equipe_foto (usuario_id, dia, em, membro_id, conversas) VALUES (?, ?, ?, ?, ?)');
 async function fotografarEquipe(u, dia) {
   const v = ob.vinculoDe(u); if (!v) return;
   const r = await ob.comLoja(u, () => orbitta.chamar('metricas_equipe', { start_date: dia, end_date: dia, ...ob.filtros(v) }));
@@ -180,11 +183,11 @@ async function fotografarEquipe(u, dia) {
     if (!ant || ant.conversas !== n) salvarFoto.run(u.id, dia, em, m.membro_id, n); // só guarda quando muda
   }
   // Fotos com mais de 10 dias não servem mais
-  db.prepare("DELETE FROM orbitta_equipe_foto WHERE usuario_id = ? AND dia < ?").run(u.id, somaDias(dia, -10));
+  st("DELETE FROM orbitta_equipe_foto WHERE usuario_id = ? AND dia < ?").run(u.id, somaDias(dia, -10));
 }
 // Momentos em que o contador de cada vendedor subiu no dia: { membro_id: [ms, ...] }
 function subidasDoDia(usuarioId, dia) {
-  const linhas = db.prepare('SELECT membro_id, em, conversas FROM orbitta_equipe_foto WHERE usuario_id = ? AND dia = ? ORDER BY membro_id, em').all(usuarioId, dia);
+  const linhas = st('SELECT membro_id, em, conversas FROM orbitta_equipe_foto WHERE usuario_id = ? AND dia = ? ORDER BY membro_id, em').all(usuarioId, dia);
   const out = {}; let ant = null;
   for (const l of linhas) {
     if (ant && ant.membro_id === l.membro_id && l.conversas > ant.conversas) {
@@ -264,11 +267,11 @@ async function _analiseLoja(u, hoje, fundo) {
     await espera(80);
   }
   // Atualiza data/situação do que já conhecemos com o que a lista trouxe agora (pode ter remarcado/cancelado)
-  const atualizar = db.prepare('UPDATE orbitta_agendamentos SET data_agendada = ?, status = ? WHERE id = ?');
+  const atualizar = st('UPDATE orbitta_agendamentos SET data_agendada = ?, status = ? WHERE id = ?');
   for (const a of lista) if (a.id) atualizar.run(a.data || null, a.status || null, a.id);
 
   // Agendamentos do dia já conhecidos mas sem a data da 1ª mensagem do cliente: busca a ficha (poucas por vez)
-  const semPrimeira = db.prepare(`SELECT DISTINCT conversa_id FROM orbitta_agendamentos WHERE usuario_id = ? AND criado_dia = ? AND primeira_msg IS NULL AND conversa_id IS NOT NULL LIMIT 40`).all(u.id, ontem);
+  const semPrimeira = st(`SELECT DISTINCT conversa_id FROM orbitta_agendamentos WHERE usuario_id = ? AND criado_dia = ? AND primeira_msg IS NULL AND conversa_id IS NOT NULL LIMIT 40`).all(u.id, ontem);
   for (const { conversa_id } of semPrimeira) {
     const ja = primeiraDaConversa.get(u.id, conversa_id);
     if (ja && ja.p) { guardarPrimeira.run(ja.p, conversa_id); continue; }
@@ -280,7 +283,7 @@ async function _analiseLoja(u, hoje, fundo) {
   const paraHoje = lista.filter((a) => a.data === hoje && !cancelado(a)).length;
 
   // Agendamentos marcados ontem, por vendedor
-  const ags = db.prepare(`SELECT vendedor_id, data_agendada, status, conversa_id, primeira_msg FROM orbitta_agendamentos WHERE usuario_id = ? AND criado_dia = ?`).all(u.id, ontem)
+  const ags = st(`SELECT vendedor_id, data_agendada, status, conversa_id, primeira_msg FROM orbitta_agendamentos WHERE usuario_id = ? AND criado_dia = ?`).all(u.id, ontem)
     .filter((a) => !/cancel/i.test(a.status || ''));
   const porVend = new Map();
   const pega = (id) => {
@@ -336,7 +339,7 @@ async function _analiseLoja(u, hoje, fundo) {
   const porId = new Map(vendedores.map((x) => [x.id, x]));
   for (const x of vendedores) x.reativacoes = 0;
   const subidas = subidasDoDia(u.id, ontem), usadas = new Map();
-  const eventos = db.prepare(`SELECT r.conversa_id, r.texto, r.msg_em, r.parado_dias, r.trecho,
+  const eventos = st(`SELECT r.conversa_id, r.texto, r.msg_em, r.parado_dias, r.trecho,
       (SELECT c.contato FROM orbitta_conversas c WHERE c.usuario_id = r.usuario_id AND c.conversa_id = r.conversa_id AND c.contato IS NOT NULL LIMIT 1) AS contato
     FROM orbitta_reativacoes r WHERE r.usuario_id = ? AND r.dia = ? ORDER BY r.msg_em`).all(u.id, ontem);
   const reatLista = [];
@@ -389,7 +392,7 @@ async function analiseLoja(u, hoje, fundo) {
   return dados;
 }
 
-const lojaPorId = (id) => db.prepare('SELECT id, nome, negocio_nome, orbitta_vinculo FROM usuarios WHERE id = ?').get(id);
+const lojaPorId = (id) => st('SELECT id, nome, negocio_nome, orbitta_vinculo FROM usuarios WHERE id = ?').get(id);
 // "Data de hoje" escolhida no filtro. Pode ir até amanhã (= análise de hoje até agora).
 const dataPedida = (q) => {
   const h = hojeBrasilia(), max = somaDias(h, 1);
@@ -428,7 +431,7 @@ function iniciarAnalise() {
   if (!orbitta.configurado()) return;
   const rodar = async () => {
     const hoje = hojeBrasilia();
-    const lista = db.prepare(`SELECT id, nome, negocio_nome, orbitta_vinculo FROM usuarios WHERE orbitta_vinculo IS NOT NULL AND orbitta_vinculo <> ''`).all();
+    const lista = st(`SELECT id, nome, negocio_nome, orbitta_vinculo FROM usuarios WHERE orbitta_vinculo IS NOT NULL AND orbitta_vinculo <> ''`).all();
     for (const u of lista) { if (ob.vinculoDe(u)) await analiseLoja(u, hoje, true).catch((e) => console.error('Análise Orbitta:', e.message)); }
   };
   setTimeout(rodar, 3 * 60 * 1000);
@@ -441,7 +444,7 @@ function iniciarAnalise() {
     const aquecer = voltas++ % 4 === 0;
     try {
       const hoje = hojeBrasilia();
-      const lista = db.prepare(`SELECT id, orbitta_vinculo FROM usuarios WHERE orbitta_vinculo IS NOT NULL AND orbitta_vinculo <> ''`).all();
+      const lista = st(`SELECT id, orbitta_vinculo FROM usuarios WHERE orbitta_vinculo IS NOT NULL AND orbitta_vinculo <> ''`).all();
       for (const u of lista) {
         if (!ob.vinculoDe(u)) continue;
         await fotografarEquipe(u, hoje).catch((e) => console.error('Foto equipe Orbitta:', e.message));

@@ -18,5 +18,8 @@
     "qrcode": "^1.5.4",
     "resend": "^4.0.1",
     "web-push": "^3.6.7"
+  },
+  "engines": {
+    "node": "22.x"
   }
 }
