@@ -679,7 +679,27 @@ function redesVisiveis(req) {
     : db.prepare('SELECT id, nome, cor, permissoes, lojas FROM cargos_tag ORDER BY ordem, id').all()
       .map((c) => ({ ...c, permissoes: permissoesLib.lerLista(c.permissoes), lojas: permissoesLib.lerIds(c.lojas) }))
       .filter((c) => c.permissoes.includes('rede') && c.lojas.length);
-  return cargos.map((c) => ({ id: c.id, nome: c.nome, cor: c.cor, lojas: c.lojas.filter((id) => nomes.has(id)).map((id) => ({ id, nome: nomes.get(id) })) }));
+  // 08/10/2026: "Rede 12", "Odres 12" e "Odres 12 Regional A" são a mesma rede — viram um botão só, "Odres 12"
+  // (lojas somadas). Pro admin, toda Odres cadastrada aparece, mesmo ainda sem lojas (1, 5, 9, 12, 14).
+  const numeroOdres = (nome) => { const m = String(nome || '').trim().match(/^(?:rede|odres)\s*(\d+)\b/i); return m ? Number(m[1]) : null; };
+  const grupos = new Map(); const soltas = [];
+  const juntar = (c) => {
+    const n = numeroOdres(c.nome);
+    if (n == null) { soltas.push({ id: c.id, nome: c.nome, cor: c.cor, lojas: c.lojas }); return; }
+    const g = grupos.get(n) || { id: `odres-${n}`, nome: `Odres ${n}`, cor: null, n, lojas: [] };
+    if (/^odres\s*\d+$/i.test(String(c.nome).trim()) || !g.cor) g.cor = c.cor;
+    c.lojas.forEach((id) => { if (!g.lojas.includes(id)) g.lojas.push(id); });
+    grupos.set(n, g);
+  };
+  cargos.forEach(juntar);
+  if (!req.redeLojas) {
+    // Cargos Odres sem "Ver Rede de lojas" ou sem lojas também contam pro admin (pra rede aparecer no menu)
+    db.prepare('SELECT id, nome, cor, lojas FROM cargos_tag').all()
+      .filter((c) => numeroOdres(c.nome) != null && /^odres/i.test(String(c.nome).trim()))
+      .forEach((c) => juntar({ ...c, lojas: permissoesLib.lerIds(c.lojas) }));
+  }
+  const lista = [...[...grupos.values()].sort((a, b) => a.n - b.n), ...soltas];
+  return lista.map((c) => ({ id: c.id, nome: c.nome, cor: c.cor, lojas: c.lojas.filter((id) => nomes.has(id)).map((id) => ({ id, nome: nomes.get(id) })) }));
 }
 admin.get('/redes', (req, res) => res.json({ redes: redesVisiveis(req) }));
 admin.get('/loja/:id/sem-resposta', (req, res) => {
