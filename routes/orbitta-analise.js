@@ -120,14 +120,17 @@ async function _analiseLoja(u, hoje) {
     if (eq && eq.atual) {
       equipe = new Set(Object.keys(eq.atual.membros || {}));
       for (const [id, mb] of Object.entries(eq.atual.membros || {})) {
-        if (!mb.conversas && !porVend.has(id)) continue;
+        if (!mb.conversas && !mb.agendamentos && !mb.vendas && !porVend.has(id)) continue;
         const x = pega(id); x.conversas = mb.conversas || 0;
+        // Números do próprio Orbitta (iguais ao painel dele): agendamentos marcados, vendas e valor vendido no dia
+        x.agendamentos_orbitta = mb.agendamentos || 0; x.vendas = mb.vendas || 0; x.valor_vendido = mb.valor_vendido || 0;
         if (mb.nome && /^Vendedor /.test(x.nome)) x.nome = mb.nome;
       }
     }
   } catch (e) { /* sem filtro */ }
-  const vendedores = [...porVend.values()].filter((x) => (x.id ? (!equipe || equipe.has(x.id)) : x.agendamentos))
-    .sort((a, b) => b.conversas - a.conversas || b.agendamentos - a.agendamentos || (b.novos + b.reativacoes) - (a.novos + a.reativacoes));
+  const semVendedor = porVend.has(null) ? porVend.get(null).agendamentos : 0;
+  const vendedores = [...porVend.values()].filter((x) => x.id && (!equipe || equipe.has(x.id)))
+    .sort((a, b) => b.conversas - a.conversas || (b.agendamentos_orbitta ?? b.agendamentos) - (a.agendamentos_orbitta ?? a.agendamentos));
 
   const g = (k) => (comparado && comparado[k] ? comparado[k].atual : null);
   return {
@@ -136,6 +139,7 @@ async function _analiseLoja(u, hoje) {
     leads_recorrentes: g('leads_recorrentes') ?? m.loja.reativacoes,
     agendamentos_hoje: paraHoje,
     vendedores,
+    sem_vendedor: semVendedor,
     incompleto: faltaram > 0,
     gerado_em: new Date().toISOString(),
   };
