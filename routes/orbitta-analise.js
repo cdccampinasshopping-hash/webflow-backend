@@ -129,7 +129,9 @@ const cache = new Map();
 async function analiseLoja(u, hoje) {
   const chave = `${u.id}|${hoje}`;
   const c = cache.get(chave);
-  if (c && Date.now() - c.em < 5 * 60 * 1000 && !c.dados.incompleto) return c.dados;
+  // Dia em andamento (hoje/ontem): guarda só 1 minuto, pra ficar praticamente em tempo real. Dias passados: 30 min.
+  const ttl = somaDias(hoje, -1) >= somaDias(hojeBrasilia(), -1) ? 60 * 1000 : 30 * 60 * 1000;
+  if (c && Date.now() - c.em < ttl && !c.dados.incompleto) return c.dados;
   const dados = await ob.comLoja(u, () => _analiseLoja(u, hoje));
   cache.set(chave, { em: Date.now(), dados });
   if (cache.size > 300) cache.delete(cache.keys().next().value);
@@ -137,7 +139,12 @@ async function analiseLoja(u, hoje) {
 }
 
 const lojaPorId = (id) => db.prepare('SELECT id, nome, negocio_nome, orbitta_vinculo FROM usuarios WHERE id = ?').get(id);
-const dataPedida = (q) => (dataValida(q.data) ? q.data : hojeBrasilia());
+// "Data de hoje" escolhida no filtro. Pode ir até amanhã (= análise de hoje até agora).
+const dataPedida = (q) => {
+  const h = hojeBrasilia(), max = somaDias(h, 1);
+  if (!dataValida(q.data)) return h;
+  return q.data > max ? max : q.data;
+};
 
 // /api/orbitta/analise — a própria loja (ou a loja que a pessoa está olhando, pelo X-Loja)
 const lojista = express.Router();
