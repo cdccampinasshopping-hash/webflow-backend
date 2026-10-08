@@ -104,14 +104,15 @@ function reativacoesNasMensagens(msgs, anterior) {
 
 // Uma leitura por loja/dia por vez; devolve true enquanto ainda tem conversa pra ler
 const lendoAgora = new Set();
+let filaReat = Promise.resolve();
 function lerReativacoesEmFundo(u, dia) {
   const k = u.id + '|' + dia;
   if (!lendoAgora.has(k)) {
     lendoAgora.add(k);
-    ob.comLoja(u, async () => {
-      // Lê de 60 em 60 até acabar (no máximo 15 rodadas por vez)
-      for (let i = 0; i < 15 && faltaLerReat(u.id, dia) > 0; i++) await lerReativacoes(u, dia);
-    }).catch((e) => console.error('Reativações Orbitta:', e.message)).finally(() => lendoAgora.delete(k));
+    // Uma loja de cada vez (fila), pra não sobrecarregar o Orbitta e deixar o resto do painel lento
+    filaReat = filaReat.then(() => ob.comLoja(u, async () => {
+      for (let i = 0; i < 6 && faltaLerReat(u.id, dia) > 0; i++) await lerReativacoes(u, dia);
+    })).catch((e) => console.error('Reativações Orbitta:', e.message)).finally(() => lendoAgora.delete(k));
   }
   return lendoAgora.has(k) || faltaLerReat(u.id, dia) > 0;
 }
@@ -229,7 +230,7 @@ function vendedorDaMensagem(texto, equipe, vendDoDia, peloContador) {
   return null;
 }
 
-async function _analiseLoja(u, hoje) {
+async function _analiseLoja(u, hoje, fundo) {
   const v = ob.vinculoDe(u);
   if (!v) return { vinculado: false };
   const f = ob.filtros(v);
@@ -302,7 +303,8 @@ async function _analiseLoja(u, hoje) {
   for (const a of ags) if (a.conversa_id && a.vendedor_id) vendDoDia.set(a.conversa_id, a.vendedor_id);
   // Lê as conversas do dia atrás de reativações (vendedor mandou mensagem pra cliente parado há 2+ dias)
   // Em segundo plano: a resposta não espera a leitura das conversas (num dia cheio isso leva minutos)
-  const lendoReat = lerReativacoesEmFundo(u, ontem);
+  // A rodada automática (todas as lojas) não lê conversas: só quando alguém abre a tela daquela loja
+  const lendoReat = fundo ? faltaLerReat(u.id, ontem) > 0 : lerReativacoesEmFundo(u, ontem);
   // Só entra quem está na equipe do Orbitta naquele dia. O Orbitta não diz quem atendeu cada conversa;
   // o painel usa o vendedor do último agendamento do cliente, então um cliente antigo que voltou
   // aparecia no nome de quem já saiu da loja (ex.: vendedor desligado). Esses ficam de fora da lista por vendedor
@@ -374,13 +376,13 @@ async function _analiseLoja(u, hoje) {
 
 // Guarda o resultado 5 minutos por loja/dia
 const cache = new Map();
-async function analiseLoja(u, hoje) {
+async function analiseLoja(u, hoje, fundo) {
   const chave = `${u.id}|${hoje}`;
   const c = cache.get(chave);
   // Dia em andamento (hoje/ontem): guarda só 1 minuto, pra ficar praticamente em tempo real. Dias passados: 30 min.
   const ttl = somaDias(hoje, -1) >= somaDias(hojeBrasilia(), -1) ? 60 * 1000 : 30 * 60 * 1000;
   if (c && Date.now() - c.em < ttl && !c.dados.incompleto) return c.dados;
-  const dados = await ob.comLoja(u, () => _analiseLoja(u, hoje));
+  const dados = await ob.comLoja(u, () => _analiseLoja(u, hoje, fundo));
   cache.set(chave, { em: Date.now(), dados });
   if (cache.size > 300) cache.delete(cache.keys().next().value);
   return dados;
@@ -426,7 +428,7 @@ function iniciarAnalise() {
   const rodar = async () => {
     const hoje = hojeBrasilia();
     const lista = db.prepare(`SELECT id, nome, negocio_nome, orbitta_vinculo FROM usuarios WHERE orbitta_vinculo IS NOT NULL AND orbitta_vinculo <> ''`).all();
-    for (const u of lista) { if (ob.vinculoDe(u)) await analiseLoja(u, hoje).catch((e) => console.error('Análise Orbitta:', e.message)); }
+    for (const u of lista) { if (ob.vinculoDe(u)) await analiseLoja(u, hoje, true).catch((e) => console.error('Análise Orbitta:', e.message)); }
   };
   setTimeout(rodar, 3 * 60 * 1000);
   setInterval(rodar, 30 * 60 * 1000);
