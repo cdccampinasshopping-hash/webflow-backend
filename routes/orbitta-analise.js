@@ -575,6 +575,16 @@ function iniciarAnalise() {
   };
   setTimeout(rodar, 3 * 60 * 1000);
   setInterval(rodar, 30 * 60 * 1000);
+  // Reativações do dia: lê as conversas novas de cada loja a cada 2 minutos, mesmo sem ninguém com a tela aberta
+  // (antes só lia quando alguém abria a Análise, e a reativação recém-feita demorava a aparecer)
+  setInterval(() => {
+    const hoje = hojeBrasilia();
+    const lista = st(`SELECT id, orbitta_vinculo FROM usuarios WHERE orbitta_vinculo IS NOT NULL AND orbitta_vinculo <> ''`).all();
+    for (const u of lista) {
+      if (!ob.vinculoDe(u)) continue;
+      try { ob.comLoja(u, () => { if (faltaLerReat(u.id, hoje) > 0) lerReativacoesEmFundo(u, hoje); }); } catch (e) { /* tenta na próxima */ }
+    }
+  }, 2 * 60 * 1000);
   // Foto da equipe a cada minuto (pra saber quem mandou cada mensagem de reativação)
   // e, a cada 4 minutos, deixa pronto o painel do dia de cada loja (Rede de lojas e Análise abrem na hora)
   let fotografando = false, voltas = 0;
