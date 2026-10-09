@@ -700,12 +700,12 @@ admin.get('/rede', async (req, res) => {
   const ve = (l) => (!req.redeLojas || req.redeLojas.has(Number(l.id))) && (!daRede || daRede.has(Number(l.id)));
   const lojas = lojasVinculadas().filter(ve);
   // Todas as lojas ao mesmo tempo (uma por uma ficava lento demais em semana/mês)
-  // Cada loja tem até 9 s pra responder; a que demorar mais aparece como "carregando" e continua sendo
+  // Cada loja tem até 4 s pra responder (a tela abre em menos de 5 s); a que demorar mais aparece como "carregando" e continua sendo
   // buscada por trás (fica guardada), então a tela abre logo e completa sozinha em seguida.
   const pendentes = [];
   const comPrazo = (u) => {
     const busca = linhaRedeGuardada(u, periodo, ini, fim).catch(() => null);
-    return Promise.race([busca, new Promise((ok) => setTimeout(() => ok('demorou'), 9000))])
+    return Promise.race([busca, new Promise((ok) => setTimeout(() => ok('demorou'), 4000))])
       .then((r) => { if (r === 'demorou') { pendentes.push({ id: u.id, nome: u.negocio_nome || u.nome }); return null; } return r; });
   };
   const linhas = (await Promise.all(lojas.map(comPrazo))).filter(Boolean);
