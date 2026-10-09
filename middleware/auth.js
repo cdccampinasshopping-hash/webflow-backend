@@ -90,7 +90,7 @@ function exigirControle(req, res, next) {
 // Olhar outra loja: o painel manda o cabeçalho X-Loja com o id da loja.
 // Só vale pra quem tem um cargo com "Ver outras lojas" que cubra essa loja, e é só leitura
 // (dá pra registrar um WhatsApp enviado, pedir "atualizar agora" e cuidar do fechamento dos vendedores, mais nada).
-const ESCRITAS_LIBERADAS = [/^\/envios\/?$/, /^\/atualizar\/?$/, /^\/vendedores\/[^/]+\/contato\/?$/, /^\/fechamento\/enviar\/?$/, /^\/visitas\/lembrete\/?$/];
+const ESCRITAS_LIBERADAS = [/^\/missao\/?$/, /^\/envios\/?$/, /^\/atualizar\/?$/, /^\/vendedores\/[^/]+\/contato\/?$/, /^\/fechamento\/enviar\/?$/, /^\/visitas\/lembrete\/?$/];
 function verOutraLoja(req, res, next) {
   const pedido = Number(req.headers['x-loja'] || 0);
   if (!pedido || pedido === Number(req.usuarioId)) return next();

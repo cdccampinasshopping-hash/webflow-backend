@@ -43,6 +43,91 @@ const salvar = st(`INSERT INTO orbitta_agendamentos (id, usuario_id, conversa_id
     status = excluded.status, lido_em = excluded.lido_em`);
 const conhecido = st('SELECT 1 FROM orbitta_agendamentos WHERE id = ?');
 const nomeDe = st('SELECT nome FROM orbitta_membros WHERE id = ?');
+
+/* ---------- Missão do dia (ranking de reativação do Orbitta) ----------
+   O Orbitta tem a "Missão do dia": uma lista de clientes pra reativar e um ranking de contatos por atendente.
+   Cada contato da missão conta como reativação do vendedor (somado às reativações achadas nas conversas).
+   Entra de dois jeitos: sozinho, se a conexão do Orbitta tiver uma ferramenta da missão; ou colando o ranking no painel. */
+db.exec(`CREATE TABLE IF NOT EXISTS orbitta_missao (
+  usuario_id INTEGER NOT NULL,
+  dia TEXT NOT NULL,
+  chave TEXT NOT NULL,
+  nome TEXT NOT NULL,
+  contatos INTEGER NOT NULL DEFAULT 0,
+  dias_meta INTEGER,
+  acima_meta INTEGER,
+  vendas INTEGER,
+  valor REAL,
+  origem TEXT NOT NULL DEFAULT 'colado',
+  atualizado_em TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (usuario_id, dia, chave)
+)`);
+const normNome = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+const salvarMissao = st(`INSERT INTO orbitta_missao (usuario_id, dia, chave, nome, contatos, dias_meta, acima_meta, vendas, valor, origem, atualizado_em)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  ON CONFLICT (usuario_id, dia, chave) DO UPDATE SET nome = excluded.nome, contatos = excluded.contatos, dias_meta = excluded.dias_meta,
+    acima_meta = excluded.acima_meta, vendas = excluded.vendas, valor = excluded.valor, origem = excluded.origem, atualizado_em = excluded.atualizado_em`);
+function guardarMissao(usuarioId, dia, linhas, origem) {
+  db.transaction(() => {
+    st('DELETE FROM orbitta_missao WHERE usuario_id = ? AND dia = ? AND origem = ?').run(usuarioId, dia, origem);
+    for (const l of linhas) {
+      if (!l.nome || !(l.contatos >= 0)) continue;
+      salvarMissao.run(usuarioId, dia, normNome(l.nome), String(l.nome).trim().slice(0, 80), Math.round(l.contatos),
+        l.dias_meta ?? null, l.acima_meta ?? null, l.vendas ?? null, l.valor ?? null, origem);
+    }
+  })();
+}
+// "Colar ranking": acha o nome de cada vendedor da equipe no texto copiado do Orbitta e pega os números que vêm depois
+// (Contatos, Dias na meta, Acima da meta, Vendas, Valor). Funciona com a tabela copiada em qualquer formato.
+function lerRankingColado(texto, nomes) {
+  const t = String(texto || '').replace(/\r/g, '');
+  const tn = normNome(t.replace(/R\$\s*[\d.]+,\d{2}/g, ' '));
+  const achados = [];
+  for (const nome of [...new Set(nomes)].sort((a, b) => b.length - a.length)) {
+    const n = normNome(nome); if (!n) continue;
+    let i = tn.indexOf(n);
+    if (i < 0) { // tenta só nome + sobrenome
+      const curto = n.split(' ').slice(0, 2).join(' ');
+      if (curto.split(' ').length === 2) i = tn.indexOf(curto);
+      if (i < 0) continue;
+      i += curto.length;
+    } else i += n.length;
+    if (achados.some((a) => a.ini <= i && i <= a.fim)) continue;
+    const resto = tn.slice(i, i + 80).match(/^\s*((?:\d+\s+){0,4}\d+)/);
+    if (!resto) continue;
+    const nums = resto[1].trim().split(/\s+/).map(Number);
+    achados.push({ nome, ini: i - n.length, fim: i, contatos: nums[0], dias_meta: nums[1] ?? null, acima_meta: nums[2] ?? null, vendas: nums[3] ?? null });
+  }
+  return achados.map(({ ini, fim, ...x }) => x);
+}
+// Lê o ranking da missão direto do Orbitta, se a conexão tiver essa ferramenta
+async function missaoDoOrbitta(u, dia, f) {
+  let lista; try { lista = await orbitta.ferramentas(); } catch (e) { return null; }
+  const ferr = lista.find((x) => /miss[aã]o|mission|ranking|reativa/i.test(x.nome + ' ' + x.descricao) && !/^(listar_conversas|ler_conversa|metricas_equipe|metricas_painel|listar_agendamentos|ficha_do_lead|buscar_leads|mensagens_dos_leads|listar_escopo)$/.test(x.nome));
+  if (!ferr) return null;
+  const args = {};
+  if (ferr.parametros.includes('start_date')) { args.start_date = dia; args.end_date = dia; }
+  if (ferr.parametros.includes('data')) args.data = dia;
+  if (ferr.parametros.includes('agent_ids') && f.agent_ids) args.agent_ids = f.agent_ids;
+  if (ferr.parametros.includes('store_ids') && f.store_ids) args.store_ids = f.store_ids;
+  const r = await orbitta.chamar(ferr.nome, args);
+  // Procura uma lista de pessoas com nome e contatos em qualquer lugar da resposta
+  const linhas = [];
+  const visitar = (x) => {
+    if (Array.isArray(x)) { x.forEach(visitar); return; }
+    if (!x || typeof x !== 'object') return;
+    const nome = x.nome || x.atendente || x.name || x.membro || x.vendedor || x.usuario;
+    const cont = x.contatos ?? x.contacts ?? x.total_contatos ?? x.contatos_feitos ?? x.reativacoes;
+    if (typeof nome === 'string' && Number.isFinite(Number(cont))) {
+      linhas.push({ nome, contatos: Number(cont), dias_meta: x.dias_na_meta ?? x.dias_meta ?? null, acima_meta: x.acima_da_meta ?? x.acima_meta ?? null, vendas: x.vendas ?? null, valor: x.valor ?? x.valor_vendido ?? null });
+      return;
+    }
+    Object.values(x).forEach(visitar);
+  };
+  visitar(r);
+  return linhas.length ? { ferramenta: ferr.nome, linhas } : null;
+}
+const missaoDoDia = (usuarioId, dia) => st('SELECT chave, nome, contatos, dias_meta, acima_meta, vendas, valor, origem, atualizado_em FROM orbitta_missao WHERE usuario_id = ? AND dia = ?').all(usuarioId, dia);
 const guardarPrimeira = st('UPDATE orbitta_agendamentos SET primeira_msg = ? WHERE conversa_id = ?');
 const primeiraDaConversa = st('SELECT MIN(primeira_mensagem) AS p FROM orbitta_conversas WHERE usuario_id = ? AND conversa_id = ?');
 
@@ -356,9 +441,39 @@ async function _analiseLoja(u, hoje, fundo) {
     porId.get(id).reativacoes++;
   }
 
+  // Missão do dia: busca sozinho no Orbitta (se a ferramenta existir) e soma como reativação de cada vendedor
+  try {
+    const auto = await missaoDoOrbitta(u, ontem, f);
+    if (auto) guardarMissao(u.id, ontem, auto.linhas, 'orbitta');
+  } catch (e) { /* segue com o que tiver */ }
+  const missao = missaoDoDia(u.id, ontem);
+  // Se veio do Orbitta, vale o do Orbitta; senão, o colado
+  const temAuto = missao.some((x) => x.origem === 'orbitta');
+  const missaoValida = missao.filter((x) => !temAuto || x.origem === 'orbitta');
+  const porNome = new Map();
+  for (const [id, nome] of Object.entries(nomesEquipe)) porNome.set(normNome(nome), id);
+  let reatMissao = 0;
+  const missaoFora = [];
+  for (const x of vendedores) { x.reativacoes_conversa = x.reativacoes || 0; x.reativacoes_missao = 0; }
+  for (const mi of missaoValida) {
+    let id = porNome.get(mi.chave);
+    if (!id) { const curto = mi.chave.split(' ').slice(0, 2).join(' '); for (const [k, v] of porNome) if (k.startsWith(curto)) { id = v; break; } }
+    if (!id) { missaoFora.push({ nome: mi.nome, contatos: mi.contatos }); continue; }
+    if (!porId.has(id)) { const x = pega(id); x.reativacoes = 0; x.reativacoes_conversa = 0; x.reativacoes_missao = 0; x.nome = nomesEquipe[id] || mi.nome; vendedores.push(x); porId.set(id, x); }
+    const x = porId.get(id);
+    x.reativacoes_missao += mi.contatos;
+    x.missao = { contatos: mi.contatos, dias_meta: mi.dias_meta, acima_meta: mi.acima_meta };
+    reatMissao += mi.contatos;
+  }
+  for (const x of vendedores) x.reativacoes = (x.reativacoes_conversa || 0) + (x.reativacoes_missao || 0);
+
   const g = (k) => (comparado && comparado[k] ? comparado[k].atual : null);
   return {
     vinculado: true, hoje, ontem,
+    reativacoes_missao: reatMissao,
+    reativacoes_conversa: reatTotal,
+    missao: { tem: missaoValida.length > 0, origem: missaoValida.length ? (temAuto ? 'orbitta' : 'colado') : null,
+      atualizado_em: missaoValida.reduce((a, x) => (x.atualizado_em > a ? x.atualizado_em : a), ''), fora_da_loja: missaoFora },
     leads_novos: g('leads_novos') ?? m.loja.novos,
     leads_recorrentes: g('leads_recorrentes') ?? m.loja.reativacoes,
     agendamentos_hoje: compDia && compDia.agend_periodo ? compDia.agend_periodo.atual : paraHoje,
@@ -370,7 +485,7 @@ async function _analiseLoja(u, hoje, fundo) {
     vendedores,
     sem_vendedor: semVendedor,
     sem_vendedor_prox: porVend.has(null) ? porVend.get(null).ag_hoje : 0,
-    reativacoes_total: reatTotal,
+    reativacoes_total: reatTotal + reatMissao,
     reativacoes_nao_identificadas: reatNaoIdent,
     incompleto: faltaram > 0 || lendoReat,
     lendo_reativacoes: lendoReat,
@@ -408,6 +523,30 @@ lojista.get('/analise', async (req, res) => {
   if (!orbitta.configurado()) return res.json({ vinculado: false });
   try { res.json({ loja: { id: u.id, nome: u.negocio_nome || u.nome }, ...(await analiseLoja(u, dataPedida(req.query))) }); }
   catch (e) { res.status(502).json({ erro: 'Não deu pra falar com o Orbitta: ' + e.message }); }
+});
+
+// Colar o ranking da Missão do dia copiado do Orbitta: { dia, texto }
+lojista.post('/missao', async (req, res) => {
+  const u = lojaPorId(req.usuarioId);
+  if (!u || !ob.vinculoDe(u)) return res.status(400).json({ erro: 'Loja não vinculada ao Orbitta.' });
+  const b = req.body || {};
+  const dia = dataValida(b.dia) ? b.dia : somaDias(hojeBrasilia(), 0);
+  // Nomes possíveis: equipe do Orbitta desse dia + todos os nomes que já vimos
+  const nomes = new Set();
+  try { const eq = await ob.comLoja(u, () => ob.equipeAoVivo(u, dia, dia)); for (const mb of Object.values((eq && eq.atual && eq.atual.membros) || {})) if (mb.nome) nomes.add(mb.nome); } catch (e) { /* segue */ }
+  st('SELECT nome FROM orbitta_membros').all().forEach((r) => nomes.add(r.nome));
+  const linhas = lerRankingColado(b.texto, [...nomes]);
+  if (!linhas.length) return res.status(400).json({ erro: 'Não achei nenhum vendedor no texto. Copie a tabela do ranking inteira (com os nomes e os números) e cole de novo.' });
+  guardarMissao(u.id, dia, linhas, 'colado');
+  for (const k of [...cache.keys()]) if (k.startsWith(u.id + '|')) cache.delete(k);
+  res.json({ ok: true, dia, linhas });
+});
+lojista.delete('/missao', (req, res) => {
+  const dia = dataValida(req.query.dia) ? req.query.dia : null;
+  if (!dia) return res.status(400).json({ erro: 'Diga o dia.' });
+  st("DELETE FROM orbitta_missao WHERE usuario_id = ? AND dia = ? AND origem = 'colado'").run(req.usuarioId, dia);
+  for (const k of [...cache.keys()]) if (k.startsWith(req.usuarioId + '|')) cache.delete(k);
+  res.json({ ok: true });
 });
 
 // /api/lojas/analise — todas as lojas que a pessoa enxerga (e a própria), uma embaixo da outra
@@ -454,4 +593,4 @@ function iniciarAnalise() {
   }, 60 * 1000);
 }
 
-module.exports = { lojista, lojas, iniciarAnalise, reativacoesNasMensagens, vendedorDaMensagem, vendedorPeloContador };
+module.exports = { lojista, lojas, iniciarAnalise, reativacoesNasMensagens, vendedorDaMensagem, vendedorPeloContador, lerRankingColado, normNome };
