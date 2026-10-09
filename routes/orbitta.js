@@ -68,7 +68,7 @@ function vinculoDe(u) {
 // Cada loja pode usar uma chave própria do Orbitta (outra conta/rede); sem chave escolhida usa a principal
 function comLoja(u, fn) {
   const v = vinculoDe(u);
-  return orbitta.comChave(v && v.chave ? orbitta.tokenDaChave(v.chave) : null, fn);
+  return orbitta.comChave(v && v.chave ? orbitta.tokenDaChave(v.chave) : null, fn, { loja: u.id, chave: v && v.chave ? v.chave : 'principal' });
 }
 function filtros(v) {
   const f = {};

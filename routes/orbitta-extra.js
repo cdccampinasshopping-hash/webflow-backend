@@ -843,4 +843,22 @@ lojas.put('/alertas', (req, res) => {
   res.json({ silenciadas: off });
 });
 
+// Saúde da conexão com o Orbitta (só o admin): pedidos por minuto, erros, tempo de resposta, por loja e por chave
+admin.get('/saude', (req, res) => {
+  if (!req.ehAdmin) return res.status(403).json({ erro: 'Só o administrador.' });
+  const s = orbitta.saude();
+  const nomes = new Map(db.prepare('SELECT id, nome, negocio_nome FROM usuarios').all().map((u) => [String(u.id), u.negocio_nome || u.nome]));
+  let chaves = new Map(); try { chaves = new Map(db.prepare('SELECT id, nome FROM orbitta_chaves').all().map((c) => [String(c.id), c.nome])); } catch (e) { /* sem chaves extras */ }
+  const nomeLoja = (k) => (k ? nomes.get(String(k)) || 'Loja ' + k : 'Geral (sem loja)');
+  const nomeChave = (k) => (!k || k === 'principal' ? 'Chave principal (ORBITTA_TOKEN)' : k === 'outra' ? 'Outra chave' : chaves.get(String(k)) || 'Chave ' + k);
+  const comLoja = (e) => (e ? { ...e, loja_nome: e.loja ? nomeLoja(e.loja) : null, chave_nome: nomeChave(e.chave) } : e);
+  res.json({ ...s,
+    lojas_vinculadas: lojasVinculadas().length,
+    ultimo_erro: comLoja((s.ultimos_5min.ultimo_erro || s.ultima_hora.ultimo_erro)),
+    por_loja: s.por_loja.map((x) => ({ ...x, nome: nomeLoja(x.chave), ultimo_erro: comLoja(x.ultimo_erro), ...(() => { const m = s.por_loja_5min.find((y) => y.chave === x.chave); return { por_minuto_5min: m ? m.por_minuto : 0 }; })() })),
+    por_chave: s.por_chave.map((x) => ({ ...x, nome: nomeChave(x.chave), ultimo_erro: comLoja(x.ultimo_erro) })),
+    por_ferramenta: s.por_ferramenta.map((x) => ({ ...x, nome: x.chave })),
+  });
+});
+
 module.exports = { notasDaRede, visitasDeAmanha, enviarLembreteVisitas, fechamentoVendedores, enviarFechamentoVendedores, lojas, lojista, admin, iniciarExtrasOrbitta, verificarRespostas, semResposta, rodadaAlertas, rodadaResumo, htmlResumo, dadosDoDia, evolucao, agendamentosDe, linhaRede, configDe };
