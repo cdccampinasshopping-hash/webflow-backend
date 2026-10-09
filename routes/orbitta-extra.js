@@ -502,6 +502,10 @@ function iniciarExtrasOrbitta() {
   // (só lê as conversas que mudaram; se uma rodada demorar mais, a próxima é pulada)
   setTimeout(alertas, 90 * 1000);
   setInterval(alertas, 20 * 1000);
+  let aquecendo = false;
+  const aquecer = async () => { if (aquecendo) return; aquecendo = true; try { await aquecerRede(); } catch (e) { console.error('Rede (aquecer):', e.message); } aquecendo = false; };
+  setTimeout(aquecer, 2 * 60 * 1000);
+  setInterval(aquecer, 2 * 60 * 1000);
   setInterval(() => rodadaResumo().catch((e) => console.error('Orbitta resumo:', e.message)), 10 * 60 * 1000);
   setInterval(() => rodadaLembretes().catch((e) => console.error('Lembrete visitas:', e.message)), 10 * 60 * 1000);
 }
@@ -558,6 +562,42 @@ async function _evolucao(u, dias) {
 }
 
 // ---------------- 3) Painel da rede ----------------
+// 08/10/2026: a Rede de lojas abre na hora com a última leitura guardada de cada loja e atualiza por trás.
+// Guardado vale até 30 min; com mais de 60 s, a tela usa o guardado e já pede uma leitura nova ao Orbitta.
+const cacheRede = new Map(); // `${id}|${ini}|${fim}` -> { em, dados, buscando }
+const REDE_FRESCO_MS = 60 * 1000, REDE_VALIDO_MS = 30 * 60 * 1000;
+function linhaRedeGuardada(u, periodo, ini, fim) {
+  const chave = `${u.id}|${ini}|${fim}`;
+  let c = cacheRede.get(chave);
+  if (!c) { c = { em: 0, dados: null, buscando: null }; cacheRede.set(chave, c); }
+  const buscar = () => {
+    if (!c.buscando) {
+      c.buscando = linhaRede(u, periodo, ini, fim)
+        .then((d) => { c.dados = d; c.em = Date.now(); return d; })
+        .finally(() => { c.buscando = null; });
+    }
+    return c.buscando;
+  };
+  const idade = Date.now() - c.em;
+  if (c.dados && idade < REDE_VALIDO_MS) {
+    if (idade > REDE_FRESCO_MS) buscar().catch(() => null); // atualiza por trás
+    return Promise.resolve(c.dados);
+  }
+  return buscar();
+}
+// Deixa o "hoje" de todas as lojas sempre pronto (a cada 2 min), pra a Rede abrir sem esperar o Orbitta
+async function aquecerRede() {
+  const hoje = hojeBrasilia();
+  for (const u of lojasVinculadas()) {
+    const c = cacheRede.get(`${u.id}|${hoje}|${hoje}`);
+    if (c && Date.now() - c.em < REDE_FRESCO_MS) continue;
+    await linhaRedeGuardada(u, 'dia', hoje, hoje).catch(() => null);
+    if (c && c.buscando) await c.buscando.catch(() => null);
+  }
+  // Limpa o que já venceu
+  for (const [k, c] of cacheRede) if (!c.buscando && Date.now() - c.em > REDE_VALIDO_MS) cacheRede.delete(k);
+}
+
 async function linhaRede(u, periodo, ini, fim) {
   // Tudo do período escolhido vem direto do Orbitta (painel + equipe); o guardado só entra se o Orbitta falhar
   const [m, comp] = await Promise.all([ob.montarAoVivo(u, ini, fim), ob.painelComparado(u, ini, fim).catch(() => null)]);
@@ -664,7 +704,7 @@ admin.get('/rede', async (req, res) => {
   // buscada por trás (fica guardada), então a tela abre logo e completa sozinha em seguida.
   const pendentes = [];
   const comPrazo = (u) => {
-    const busca = linhaRede(u, periodo, ini, fim).catch(() => null);
+    const busca = linhaRedeGuardada(u, periodo, ini, fim).catch(() => null);
     return Promise.race([busca, new Promise((ok) => setTimeout(() => ok('demorou'), 9000))])
       .then((r) => { if (r === 'demorou') { pendentes.push({ id: u.id, nome: u.negocio_nome || u.nome }); return null; } return r; });
   };
