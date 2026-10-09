@@ -127,15 +127,40 @@ function leadsDoPeriodo(usuarioId, ini, fim) {
   return db.prepare(`SELECT ${CAMPOS} FROM leads WHERE usuario_id = ? AND data >= ? AND data <= ? ORDER BY data DESC, id DESC`).all(usuarioId, ini, fim);
 }
 
+// 08/10/2026: loja ligada ao Orbitta tira os números do Orbitta (o que o painel sincroniza a cada 5 min),
+// não dos leads lançados à mão — antes a aba Leads do controle ficava zerada pra quem não lança nada.
+function doOrbitta(usuarioId, ini, fim) {
+  let orb; try { orb = require('./orbitta'); } catch (e) { return null; }
+  const u = db.prepare('SELECT id, orbitta_vinculo FROM usuarios WHERE id = ?').get(usuarioId);
+  if (!u || !orb.vinculoDe(u)) return null;
+  const m = orb.montar(usuarioId, ini, fim);
+  if (!m.tem_dados) return null;
+  const sit = m.situacao || {};
+  const vendedores = m.vendedores.map((v) => ({ vendedor: v.nome, total: v.conversas || v.pegos || 0, novos: v.novos || 0, reativacoes: v.reativacoes || 0,
+    atendimento: 0, vendidos: v.vendas || 0, nao_responderam: 0, nao_respondidos: 0 }));
+  return { total: m.loja.conversas, novos: m.loja.novos, reativacoes: m.loja.reativacoes, atendimento: 0, vendidos: m.loja.vendas,
+    nao_responderam: sit.nao_responderam || 0, nao_respondidos: sit.nao_respondidos || 0, vendedores, fonte: 'orbitta' };
+}
+// Totais da loja no período: Orbitta quando ligada, senão os leads lançados à mão
+function totaisDe(usuarioId, ini, fim) {
+  return doOrbitta(usuarioId, ini, fim) || somar(leadsDoPeriodo(usuarioId, ini, fim));
+}
+function somarTotais(lista) {
+  const campos = ['total', 'novos', 'reativacoes', 'atendimento', 'vendidos', 'nao_responderam', 'nao_respondidos'];
+  const out = Object.fromEntries(campos.map((c) => [c, 0])); out.vendedores = [];
+  for (const t of lista) { campos.forEach((c) => { out[c] += t[c] || 0; }); out.vendedores.push(...t.vendedores.map((v) => ({ ...v }))); }
+  return out;
+}
+
 function relatorioDe(usuarioId, periodo, data, ate) {
   const { ini, fim } = intervalo(periodo, data, ate);
   const lista = leadsDoPeriodo(usuarioId, ini, fim);
   const porDia = new Map(diasEntre(ini, fim).map((d) => [d, []]));
   lista.forEach((l) => { if (porDia.has(l.data)) porDia.get(l.data).push(l); });
-  const dias = [...porDia.entries()].map(([d, ls]) => { const t = somar(ls); delete t.vendedores; return { data: d, ...t }; });
+  const dias = [...porDia.entries()].map(([d, ls]) => { const t = doOrbitta(usuarioId, d, d) || somar(ls); const { vendedores, fonte, ...resto } = t; return { data: d, ...resto }; });
   const envios = db.prepare('SELECT data, vendedor, telefone, origem FROM lead_envios WHERE usuario_id = ? AND data >= ? AND data <= ?').all(usuarioId, ini, fim);
   dias.forEach((d) => { d.mensagens = envios.filter((e) => e.data === d.data).length; });
-  return { periodo, ini, fim, hoje: hojeBrasilia(), resumo: juntarEnvios(somar(lista), envios), dias };
+  return { periodo, ini, fim, hoje: hojeBrasilia(), resumo: juntarEnvios(totaisDe(usuarioId, ini, fim), envios), dias };
 }
 
 function lerPeriodo(q) {
@@ -272,11 +297,12 @@ admin.get('/relatorio', (req, res) => {
   const { periodo, data, ate } = lerPeriodo(req.query);
   const { ini, fim } = intervalo(periodo, data, ate);
   const lojas = db.prepare(`SELECT id, nome, negocio_nome FROM usuarios
-    WHERE is_admin = 0 AND (checklist_ativo = 1 OR id IN (SELECT DISTINCT usuario_id FROM leads WHERE data >= ? AND data <= ?))
+    WHERE is_admin = 0 AND (checklist_ativo = 1 OR (orbitta_vinculo IS NOT NULL AND orbitta_vinculo <> '') OR id IN (SELECT DISTINCT usuario_id FROM leads WHERE data >= ? AND data <= ?))
       AND cargo IN ('lojista', 'checklist') ORDER BY COALESCE(negocio_nome, nome)`).all(ini, fim).filter((l) => !req.relLojas || req.relLojas.has(l.id));
-  const todas = lojas.map((l) => ({ ...l, ...juntarEnvios(somar(leadsDoPeriodo(l.id, ini, fim)), enviosDoPeriodo(l.id, ini, fim)) }));
+  const totais = new Map(lojas.map((l) => [l.id, totaisDe(l.id, ini, fim)]));
+  const todas = lojas.map((l) => ({ ...l, ...juntarEnvios({ ...totais.get(l.id), vendedores: totais.get(l.id).vendedores.map((v) => ({ ...v })) }, enviosDoPeriodo(l.id, ini, fim)) }));
   res.json({ periodo, ini, fim, hoje: hojeBrasilia(), lojas: todas,
-    resumo: juntarEnvios(somar(lojas.flatMap((l) => leadsDoPeriodo(l.id, ini, fim))), lojas.flatMap((l) => enviosDoPeriodo(l.id, ini, fim))) });
+    resumo: juntarEnvios(somarTotais([...totais.values()]), lojas.flatMap((l) => enviosDoPeriodo(l.id, ini, fim))) });
 });
 
 // Detalhe de uma loja: totais por vendedor, por dia e a lista de leads

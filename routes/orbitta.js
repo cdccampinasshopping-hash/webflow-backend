@@ -587,8 +587,8 @@ admin.get('/lojas-vinculadas', (req, res) => {
     ORDER BY COALESCE(negocio_nome, nome)`).all().filter((u) => vinculoDe(u) && (!req.relLojas || req.relLojas.has(u.id))).map((u) => ({ id: u.id, nome: u.negocio_nome || u.nome }));
   res.json({ lojas });
 });
-admin.get('/conferencia/:id', async (req, res) => {
-  const u = db.prepare('SELECT id, nome, negocio_nome, orbitta_vinculo FROM usuarios WHERE id = ?').get(req.params.id);
+async function conferencia(lojaId, req, res) {
+  const u = db.prepare('SELECT id, nome, negocio_nome, orbitta_vinculo FROM usuarios WHERE id = ?').get(lojaId);
   if (!u) return res.status(404).json({ erro: 'Loja não encontrada.' });
   if (!vinculoDe(u)) return res.json({ vinculado: false, loja: { id: u.id, nome: u.negocio_nome || u.nome } });
   const data = dataValida(req.query.data) ? req.query.data : hojeBrasilia();
@@ -612,13 +612,21 @@ admin.get('/conferencia/:id', async (req, res) => {
     ],
     internos: { conversas: conv.total || 0, com_vendedor: conv.com_vendedor || 0, sem_ficha: conv.sem_ficha || 0, lidas: conv.lidas || 0,
       respostas_medidas: m.resposta.respostas, resposta_media_seg: m.resposta.media_seg, situacao: m.situacao } });
-});
-admin.post('/conferencia/:id/sincronizar', async (req, res) => {
-  const u = db.prepare('SELECT id, orbitta_vinculo FROM usuarios WHERE id = ?').get(req.params.id);
+}
+async function conferenciaSincronizar(lojaId, req, res) {
+  const u = db.prepare('SELECT id, orbitta_vinculo FROM usuarios WHERE id = ?').get(lojaId);
   if (!u || !vinculoDe(u)) return res.status(400).json({ erro: 'Loja não vinculada ao Orbitta.' });
   const data = dataValida((req.body || {}).data) ? req.body.data : hojeBrasilia();
   for (const c of [cacheComparado, cacheEquipeAoVivo]) for (const k of [...c.keys()]) if (k.startsWith(u.id + '|')) c.delete(k);
   try { await sincronizarDia(u, data); res.json({ ok: true }); } catch (e) { res.status(502).json({ erro: e.message }); }
+}
+admin.get('/conferencia/:id', (req, res) => conferencia(req.params.id, req, res));
+admin.post('/conferencia/:id/sincronizar', (req, res) => conferenciaSincronizar(req.params.id, req, res));
+// Cada loja confere a própria (08/10/2026): Orbitta agora x painel, só da loja de quem está logado
+lojista.get('/conferencia', (req, res) => conferencia(req.usuarioId, req, res));
+lojista.post('/conferencia/sincronizar', (req, res) => {
+  if (req.vendoOutraLoja) return res.status(403).json({ erro: 'Você está olhando outra loja: aqui é só pra ver.' });
+  return conferenciaSincronizar(req.usuarioId, req, res);
 });
 
 function apagarDoCliente(usuarioId) {
