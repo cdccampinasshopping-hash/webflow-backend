@@ -505,7 +505,7 @@ function iniciarExtrasOrbitta() {
   let aquecendo = false;
   const aquecer = async () => { if (aquecendo) return; aquecendo = true; try { await aquecerRede(); } catch (e) { console.error('Rede (aquecer):', e.message); } aquecendo = false; };
   setTimeout(aquecer, 2 * 60 * 1000);
-  setInterval(aquecer, 2 * 60 * 1000);
+  setInterval(aquecer, 60 * 1000); // Rede de lojas: linha de hoje de cada loja renovada a cada minuto
   setInterval(() => rodadaResumo().catch((e) => console.error('Orbitta resumo:', e.message)), 10 * 60 * 1000);
   setInterval(() => rodadaLembretes().catch((e) => console.error('Lembrete visitas:', e.message)), 10 * 60 * 1000);
 }
@@ -588,12 +588,18 @@ function linhaRedeGuardada(u, periodo, ini, fim) {
 // Deixa o "hoje" de todas as lojas sempre pronto (a cada 2 min), pra a Rede abrir sem esperar o Orbitta
 async function aquecerRede() {
   const hoje = hojeBrasilia();
-  for (const u of lojasVinculadas()) {
-    const c = cacheRede.get(`${u.id}|${hoje}|${hoje}`);
-    if (c && Date.now() - c.em < REDE_FRESCO_MS) continue;
-    await linhaRedeGuardada(u, 'dia', hoje, hoje).catch(() => null);
-    if (c && c.buscando) await c.buscando.catch(() => null);
-  }
+  // 4 lojas por vez, pra volta inteira caber em ~1 minuto mesmo com muitas lojas
+  const fila = lojasVinculadas();
+  const trabalhar = async () => {
+    for (let u = fila.shift(); u; u = fila.shift()) {
+      const c = cacheRede.get(`${u.id}|${hoje}|${hoje}`);
+      if (c && Date.now() - c.em < REDE_FRESCO_MS) continue;
+      await linhaRedeGuardada(u, 'dia', hoje, hoje).catch(() => null);
+      const c2 = cacheRede.get(`${u.id}|${hoje}|${hoje}`);
+      if (c2 && c2.buscando) await c2.buscando.catch(() => null);
+    }
+  };
+  await Promise.all([trabalhar(), trabalhar(), trabalhar(), trabalhar()]);
   // Limpa o que já venceu
   for (const [k, c] of cacheRede) if (!c.buscando && Date.now() - c.em > REDE_VALIDO_MS) cacheRede.delete(k);
 }

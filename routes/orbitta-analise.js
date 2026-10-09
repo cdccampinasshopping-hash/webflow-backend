@@ -621,7 +621,7 @@ function iniciarAnalise() {
   let fotografando = false, voltas = 0;
   setInterval(async () => {
     if (fotografando) return; fotografando = true;
-    const aquecer = voltas++ % 4 === 0;
+    const aquecer = true; voltas++; // números da loja de hoje renovados a cada minuto (quase ao vivo)
     try {
       const hoje = hojeBrasilia();
       const lista = st(`SELECT id, orbitta_vinculo FROM usuarios WHERE orbitta_vinculo IS NOT NULL AND orbitta_vinculo <> ''`).all();

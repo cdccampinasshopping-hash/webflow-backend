@@ -222,7 +222,7 @@ function iniciarSincronizacaoOrbitta() {
     if (r && r.erros && r.erros.length) console.error('Orbitta:', r.erros.join(' | '));
   };
   setTimeout(rodar, 60 * 1000);
-  setInterval(rodar, 5 * 60 * 1000);
+  setInterval(rodar, 3 * 60 * 1000);
 }
 
 // Quem ficou sem resposta e quem não respondeu, contado direto das conversas do Orbitta
@@ -306,8 +306,11 @@ const cacheComparado = new Map();
 // Cache que responde na hora: até 5 min devolve o guardado; até 3 h devolve o guardado e atualiza por trás
 // (a próxima abertura já vem com o número novo); mais velho que isso, espera buscar.
 const FRESCO = 5 * 60 * 1000, VELHO_OK = 3 * 3600 * 1000;
+// Período que inclui hoje: quase ao vivo (1 min). Dias que já fecharam: 5 min.
+const FRESCO_HOJE = 60 * 1000;
+const frescoDe = (fim) => (String(fim || '') >= hojeBrasilia() ? FRESCO_HOJE : FRESCO);
 const buscando = new Map();
-function doCache(cache, chave, buscar) {
+function doCache(cache, chave, buscar, fresco = FRESCO) {
   const c = cache.get(chave);
   const atualizar = () => {
     if (!buscando.has(cache) ) buscando.set(cache, new Map());
@@ -321,7 +324,7 @@ function doCache(cache, chave, buscar) {
     }
     return b.get(chave);
   };
-  if (c && Date.now() - c.em < FRESCO) return Promise.resolve(c.dados);
+  if (c && Date.now() - c.em < fresco) return Promise.resolve(c.dados);
   if (c && Date.now() - c.em < VELHO_OK) { atualizar().catch(() => {}); return Promise.resolve(c.dados); }
   return atualizar();
 }
@@ -329,7 +332,7 @@ function painelComparado(u, ini, fim) { return comLoja(u, () => _painelComparado
 async function _painelComparado(u, ini, fim) {
   const v = vinculoDe(u); if (!v || !orbitta.configurado()) return null;
   const chave = `${u.id}|${ini}|${fim}`;
-  return doCache(cacheComparado, chave, () => buscarPainel(u, v, ini, fim, chave));
+  return doCache(cacheComparado, chave, () => buscarPainel(u, v, ini, fim, chave), frescoDe(fim));
 }
 async function buscarPainel(u, v, ini, fim, chave) {
   const p = await orbitta.chamar('metricas_painel', { start_date: ini, end_date: fim, ...filtros(v) });
@@ -360,7 +363,7 @@ async function _equipeAoVivo(u, ini, fim) {
   return doCache(cacheEquipeAoVivo, chave, async () => {
     const r = await orbitta.chamar('metricas_equipe', { start_date: ini, end_date: fim, ...filtros(v) });
     return dadosEquipe(r);
-  });
+  }, frescoDe(fim));
 }
 function dadosEquipe(r) {
   guardarNomes(r.membros); guardarNomes(r.membros_periodo_anterior);
