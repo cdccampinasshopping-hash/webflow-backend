@@ -496,7 +496,9 @@ async function _analiseLoja(u, hoje, fundo) {
     x.missao = { contatos: mi.contatos, dias_meta: mi.dias_meta, acima_meta: mi.acima_meta };
     reatMissao += mi.contatos;
   }
-  for (const x of vendedores) x.reativacoes = (x.reativacoes_conversa || 0) + (x.reativacoes_missao || 0);
+  // Reativação oficial por vendedor = só o número do Orbitta (ranking da Missão do dia). As achadas nas conversas
+  // ficam como detalhe (reativacoes_conversa / lista), sem entrar no número (09/10/2026).
+  for (const x of vendedores) x.reativacoes = missaoValida.length ? (x.reativacoes_missao || 0) : null;
 
   const g = (k) => (comparado && comparado[k] ? comparado[k].atual : null);
   return {
@@ -516,7 +518,7 @@ async function _analiseLoja(u, hoje, fundo) {
     vendedores,
     sem_vendedor: semVendedor,
     sem_vendedor_prox: porVend.has(null) ? porVend.get(null).ag_hoje : 0,
-    reativacoes_total: reatTotal + reatMissao,
+    reativacoes_total: missaoValida.length ? reatMissao : null,
     reativacoes_nao_identificadas: reatNaoIdent,
     incompleto: faltaram > 0 || lendoReat,
     lendo_reativacoes: lendoReat,

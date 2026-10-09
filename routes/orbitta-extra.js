@@ -222,8 +222,8 @@ function htmlResumo(u, data, d) {
     : `<p>Conversas: ${l.conversas} · Novos: ${l.novos} · Reativações: ${l.reativacoes} · Agendamentos: ${l.agendamentos} · Vendas: ${l.vendas}</p>`;
   const vend = d.m.vendedores.map((v) => `<tr>
       <td style="padding:7px 6px;border-bottom:1px solid #E3E6EC"><b>${esc(v.nome)}</b></td>
-      <td style="padding:7px 6px;border-bottom:1px solid #E3E6EC;text-align:right">${v.pegos}</td>
-      <td style="padding:7px 6px;border-bottom:1px solid #E3E6EC;text-align:right">${v.reativacoes}</td>
+      <td style="padding:7px 6px;border-bottom:1px solid #E3E6EC;text-align:right">${v.conversas}</td>
+      <td style="padding:7px 6px;border-bottom:1px solid #E3E6EC;text-align:right">${v.reativacoes == null ? '—' : v.reativacoes}</td>
       <td style="padding:7px 6px;border-bottom:1px solid #E3E6EC;text-align:right">${v.agendamentos}</td>
       <td style="padding:7px 6px;border-bottom:1px solid #E3E6EC;text-align:right">${v.vendas}</td>
       <td style="padding:7px 6px;border-bottom:1px solid #E3E6EC;text-align:right">${pct(v.vendas, v.conversas)}</td></tr>`).join('');
@@ -236,7 +236,7 @@ function htmlResumo(u, data, d) {
     <p style="margin:0 0 16px;color:#4A5873">${dataBr(data)} · comparado com o dia anterior</p>
     ${cards}
     ${vend ? `<h3 style="margin:6px 0 6px">Por vendedor</h3><table style="width:100%;border-collapse:collapse;background:#fff;font-size:13px">
-      <tr style="color:#6B7690;text-align:right"><th style="text-align:left;padding:6px">Vendedor</th><th style="padding:6px">Leads</th><th style="padding:6px">Reativ.</th><th style="padding:6px">Agend.</th><th style="padding:6px">Vendas</th><th style="padding:6px">Conversão</th></tr>${vend}</table>` : ''}
+      <tr style="color:#6B7690;text-align:right"><th style="text-align:left;padding:6px">Vendedor</th><th style="padding:6px">Conversas</th><th style="padding:6px">Reativ.</th><th style="padding:6px">Agend.</th><th style="padding:6px">Vendas</th><th style="padding:6px">Conversão</th></tr>${vend}</table>` : ''}
     ${sem}
     ${d.m.resposta && d.m.resposta.media_seg != null ? `<p style="margin:10px 0 0;font-size:13px">Tempo médio de resposta dos vendedores: <b>${Math.max(1, Math.round(d.m.resposta.media_seg / 60))} min</b> (${d.m.resposta.respostas} respostas medidas)</p>` : ''}
     <p style="margin:10px 0 0;font-size:13px">WhatsApp de reativação enviados pelo painel: <b>${d.whatsapp}</b></p>
@@ -254,8 +254,8 @@ function textoResumo(u, d) {
   const meta = ob.metaDe(u);
   if (meta) partes.push(`Meta: ${[meta.leads ? `${leads}/${meta.leads} leads` : '', meta.vendas ? `${vendas}/${meta.vendas} vendas` : ''].filter(Boolean).join(', ')}`);
   if (d.m.resposta && d.m.resposta.media_seg != null) partes.push(`Resposta média do vendedor: ${Math.max(1, Math.round(d.m.resposta.media_seg / 60))} min`);
-  const top = d.m.vendedores.slice().sort((a, b) => b.vendas - a.vendas || b.pegos - a.pegos)[0];
-  if (top && (top.vendas || top.pegos)) partes.push(`Destaque: ${top.nome} (${top.vendas} venda${top.vendas === 1 ? '' : 's'}, ${top.pegos} leads)`);
+  const top = d.m.vendedores.slice().sort((a, b) => b.vendas - a.vendas || b.conversas - a.conversas)[0];
+  if (top && (top.vendas || top.conversas)) partes.push(`Destaque: ${top.nome} (${top.vendas} venda${top.vendas === 1 ? '' : 's'}, ${top.conversas} conversas)`);
   if (d.ck) partes.push(`Checklist: ${d.ck.feitas}/${d.ck.total}${d.ck.feitas < d.ck.total ? ` (faltaram ${d.ck.total - d.ck.feitas})` : ' completo'}`);
   partes.push(d.sem.length ? `Sem resposta agora: ${d.sem.length} (${textoPorVendedor(d.sem)})` : 'Ninguém ficou sem resposta');
   return partes.join(' · ');
@@ -326,12 +326,12 @@ function fechamentoVendedores(u, data) {
       .forEach((r) => { if (r.vendedor_id) demoras.set(r.vendedor_id, (demoras.get(r.vendedor_id) || 0) + 1); });
   } catch (e) { /* sem tabela */ }
   const contatos = new Map(db.prepare('SELECT membro_id, whatsapp, email FROM vendedor_contatos WHERE usuario_id = ?').all(u.id).map((c) => [c.membro_id, c]));
-  const vs = m.vendedores.filter((v) => v.id && (v.pegos || v.vendas || v.conversas || pendentes.get(v.id)))
-    .sort((a, b) => b.vendas - a.vendas || b.pegos - a.pegos || (a.resposta_seg ?? 1e9) - (b.resposta_seg ?? 1e9));
+  const vs = m.vendedores.filter((v) => v.id && (v.vendas || v.conversas || v.reativacoes || pendentes.get(v.id)))
+    .sort((a, b) => b.vendas - a.vendas || b.conversas - a.conversas || (a.primeira_resposta_seg ?? 1e9) - (b.primeira_resposta_seg ?? 1e9));
   const loja = u.negocio_nome || u.nome;
   return vs.map((v, i) => {
-    const f = { membro_id: v.id, nome: v.nome, posicao: i + 1, total: vs.length, pegos: v.pegos, novos: v.novos, reativacoes: v.reativacoes,
-      vendas: v.vendas, valor_vendido: v.valor_vendido, resposta_seg: v.resposta_seg, sem_resposta: pendentes.get(v.id) || 0, demoras: demoras.get(v.id) || 0,
+    const f = { membro_id: v.id, nome: v.nome, posicao: i + 1, total: vs.length, conversas: v.conversas, agendamentos: v.agendamentos, reativacoes: v.reativacoes,
+      vendas: v.vendas, valor_vendido: v.valor_vendido, resposta_seg: v.primeira_resposta_seg, sem_resposta: pendentes.get(v.id) || 0, demoras: demoras.get(v.id) || 0,
       contato: contatos.get(v.id) ? { whatsapp: contatos.get(v.id).whatsapp || '', email: contatos.get(v.id).email || '' } : { whatsapp: '', email: '' } };
     f.texto = textoVendedor(f, loja, data);
     return f;
@@ -343,9 +343,9 @@ function textoVendedor(f, loja, data) {
   const partes = [
     `Fechamento ${dataBr(data).slice(0, 5)} · ${loja}`,
     `${primeiro}, você ficou em ${f.posicao}º de ${f.total} no placar ${medalha}`.trim(),
-    `Leads que pegou: ${f.pegos} (${f.novos} novos, ${f.reativacoes} reativações)`,
+    `Conversas atendidas: ${f.conversas}${f.reativacoes != null ? ` · Reativações: ${f.reativacoes}` : ''} · Agendamentos: ${f.agendamentos}`,
     `Vendas: ${f.vendas}${f.valor_vendido ? ` (${brl(f.valor_vendido)})` : ''}`,
-    `Tempo médio de resposta: ${tempoTxt(f.resposta_seg)}`,
+    `1ª resposta média: ${tempoTxt(f.resposta_seg)}`,
     f.demoras ? `Cliente esperou mais de 5 min: ${f.demoras} vez${f.demoras > 1 ? 'es' : ''}` : 'Nenhum cliente esperou mais de 5 min 👏',
     f.sem_resposta ? `Ficaram sem resposta agora: ${f.sem_resposta}` : 'Ninguém ficou sem resposta',
   ];
@@ -359,9 +359,11 @@ function htmlVendedor(f, loja, data) {
     <p style="margin:0 0 16px;color:#4A5873">${esc(f.nome)} · ${esc(loja)} · ${dataBr(data)}</p>
     <div style="background:#151B26;color:#fff;border-radius:12px;padding:16px;margin:0 0 14px;font-size:18px;font-weight:700">${['🥇', '🥈', '🥉'][f.posicao - 1] || ''} ${f.posicao}º de ${f.total} no placar</div>
     <table style="width:100%;border-collapse:collapse;background:#fff;border-radius:10px">
-      ${linha('Leads que pegou', `${f.pegos} <span style="font-weight:400;color:#6B7690">(${f.novos} novos · ${f.reativacoes} reativ.)</span>`)}
+      ${linha('Conversas atendidas', f.conversas)}
+      ${f.reativacoes != null ? linha('Reativações (Missão do dia)', f.reativacoes) : ''}
+      ${linha('Agendamentos', f.agendamentos)}
       ${linha('Vendas', `${f.vendas}${f.valor_vendido ? ' · ' + brl(f.valor_vendido) : ''}`, f.vendas ? '#0F8F6B' : '')}
-      ${linha('Tempo médio de resposta', tempoTxt(f.resposta_seg), f.resposta_seg == null ? '' : f.resposta_seg <= 300 ? '#0F8F6B' : f.resposta_seg <= 900 ? '#B54708' : '#B42318')}
+      ${linha('1ª resposta média', tempoTxt(f.resposta_seg), f.resposta_seg == null ? '' : f.resposta_seg <= 300 ? '#0F8F6B' : f.resposta_seg <= 900 ? '#B54708' : '#B42318')}
       ${linha('Cliente esperou mais de 5 min', f.demoras, f.demoras ? '#B42318' : '#0F8F6B')}
       ${linha('Sem resposta no fechamento', f.sem_resposta, f.sem_resposta ? '#B42318' : '#0F8F6B')}
     </table>

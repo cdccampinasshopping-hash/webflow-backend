@@ -136,7 +136,7 @@ function doOrbitta(usuarioId, ini, fim) {
   const m = orb.montar(usuarioId, ini, fim);
   if (!m.tem_dados) return null;
   const sit = m.situacao || {};
-  const vendedores = m.vendedores.map((v) => ({ vendedor: v.nome, total: v.conversas || v.pegos || 0, novos: v.novos || 0, reativacoes: v.reativacoes || 0,
+  const vendedores = m.vendedores.map((v) => ({ vendedor: v.nome, total: v.conversas || 0, novos: '—', reativacoes: v.reativacoes == null ? '—' : v.reativacoes, // o Orbitta não dá "novos" por vendedor
     atendimento: 0, vendidos: v.vendas || 0, nao_responderam: 0, nao_respondidos: 0 }));
   return { total: m.loja.conversas, novos: m.loja.novos, reativacoes: m.loja.reativacoes, atendimento: 0, vendidos: m.loja.vendas,
     nao_responderam: sit.nao_responderam || 0, nao_respondidos: sit.nao_respondidos || 0, vendedores, fonte: 'orbitta' };

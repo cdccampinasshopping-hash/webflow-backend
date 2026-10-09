@@ -256,7 +256,7 @@ function montar(usuarioId, ini, fim) {
   const nomeDe = db.prepare('SELECT nome FROM orbitta_membros WHERE id = ?');
   const pegaV = (id, nome) => {
     if (!vend.has(id)) { const g = !nome && id ? nomeDe.get(id) : null; nome = nome || (g && g.nome) || null; }
-    if (!vend.has(id)) vend.set(id, { id, nome: nome || 'Vendedor ' + String(id || '').slice(0, 4), conversas: 0, agendamentos: 0, vendas: 0, valor_vendido: 0, transferencias: 0, mensagens: 0, _resp: 0, _respN: 0, pegos: 0, novos: 0, reativacoes: 0 });
+    if (!vend.has(id)) vend.set(id, { id, nome: nome || 'Vendedor ' + String(id || '').slice(0, 4), conversas: 0, agendamentos: 0, vendas: 0, valor_vendido: 0, transferencias: 0, mensagens: 0, _resp: 0, _respN: 0, reativacoes: null });
     const v = vend.get(id); if (nome) v.nome = nome; return v;
   };
   let atualizado = null, erro = null;
@@ -280,25 +280,61 @@ function montar(usuarioId, ini, fim) {
   }
   const etapas = {};
   let semVendedor = 0, semFicha = 0;
+  // Por vendedor só vai número que o Orbitta dá (09/10/2026): conversas, agendamentos, vendas, valor, transferências,
+  // 1ª resposta e as reativações do ranking da Missão do dia. Nada de "leads que pegou" calculado aqui.
   for (const c of conv) {
     if (c.etapa) etapas[c.etapa] = (etapas[c.etapa] || 0) + 1;
-    if (!c.ficha_em) { semFicha++; continue; }
-    // Reativação = cliente que já tinha falado com a loja antes desse dia
-    const ehReativ = c.primeira_mensagem ? new Date(c.primeira_mensagem) < new Date(inicioDoDiaUtc(c.data)) : false;
-    if (!c.vendedor_id) { semVendedor++; continue; }
-    const v = pegaV(c.vendedor_id, null);
-    v.pegos++; if (ehReativ) v.reativacoes++; else v.novos++;
+    if (!c.ficha_em) semFicha++;
   }
   const vendedores = [...vend.values()].map((v) => {
     const { _resp, _respN, ...resto } = v;
     return { ...resto, valor_vendido: Math.round(v.valor_vendido * 100) / 100, primeira_resposta_seg: _respN ? Math.round(_resp / _respN) : null };
-  }).filter((v) => v.conversas || v.agendamentos || v.vendas || v.pegos || v.transferencias)
-    .sort((a, b) => b.pegos - a.pegos || b.conversas - a.conversas);
+  }).filter((v) => v.conversas || v.agendamentos || v.vendas || v.transferencias)
+    .sort((a, b) => b.conversas - a.conversas || b.vendas - a.vendas);
   loja.vendas_valor = Math.round(loja.vendas_valor * 100) / 100;
   const tr = temposResposta(usuarioId, ini, fim);
   for (const v of vendedores) { const t = tr.vendedores[v.id]; v.resposta_seg = t ? t.media_seg : null; v.respostas = t ? t.respostas : 0; }
-  return { loja, vendedores, etapas, resposta: { media_seg: tr.media_seg, respostas: tr.respostas }, sem_vendedor: semVendedor, fichas_pendentes: semFicha,
-    situacao: situacaoConversas(usuarioId, ini, fim), atualizado_em: atualizado, erro, tem_dados: dias.length > 0 };
+  const m = { loja, vendedores, etapas, resposta: { media_seg: tr.media_seg, respostas: tr.respostas }, sem_vendedor: semVendedor, fichas_pendentes: semFicha,
+    situacao: situacaoConversas(usuarioId, ini, fim), atualizado_em: atualizado, erro, tem_dados: dias.length > 0,
+    missao: missaoNoPeriodo(usuarioId, ini, fim) };
+  aplicarMissao(m);
+  return m;
+}
+
+// ---------------- reativações por vendedor = ranking da Missão do dia do Orbitta ----------------
+// O Orbitta não manda reativação por vendedor nas métricas; o único número dele é o ranking da Missão do dia
+// (entra sozinho se a conexão tiver a ferramenta, ou colado na Análise). Sem ranking no período: null ("—").
+const normNomeM = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+function missaoNoPeriodo(usuarioId, ini, fim) {
+  let linhas = [];
+  try { linhas = db.prepare('SELECT dia, chave, nome, contatos, origem, atualizado_em FROM orbitta_missao WHERE usuario_id = ? AND dia >= ? AND dia <= ?').all(usuarioId, ini, fim); }
+  catch (e) { return { tem: false, dias: 0, linhas: [] }; }
+  // Num mesmo dia, se veio direto do Orbitta vale o do Orbitta; senão, o colado
+  const auto = new Set(linhas.filter((l) => l.origem === 'orbitta').map((l) => l.dia));
+  const validas = linhas.filter((l) => !auto.has(l.dia) || l.origem === 'orbitta');
+  const soma = new Map();
+  for (const l of validas) { const x = soma.get(l.chave) || { chave: l.chave, nome: l.nome, contatos: 0 }; x.contatos += l.contatos || 0; soma.set(l.chave, x); }
+  return { tem: validas.length > 0, dias: new Set(validas.map((l) => l.dia)).size, origem: auto.size ? 'orbitta' : (validas.length ? 'colado' : null),
+    atualizado_em: validas.reduce((a, l) => (l.atualizado_em > a ? l.atualizado_em : a), '') || null, linhas: [...soma.values()] };
+}
+function aplicarMissao(m) {
+  const mi = m && m.missao; if (!mi) return m;
+  for (const v of m.vendedores) v.reativacoes = mi.tem ? 0 : null;
+  if (!mi.tem) return m;
+  const porNome = new Map(m.vendedores.map((v) => [normNomeM(v.nome), v]));
+  const fora = [];
+  for (const l of mi.linhas) {
+    let v = porNome.get(l.chave);
+    if (!v) { const curto = l.chave.split(' ').slice(0, 2).join(' '); for (const [k, x] of porNome) if (k.startsWith(curto)) { v = x; break; } }
+    if (!v) {
+      // Vendedor da missão sem conversa no período: entra com zero no resto
+      const mb = db.prepare('SELECT id, nome FROM orbitta_membros').all().find((x) => normNomeM(x.nome) === l.chave);
+      if (mb) { v = { id: mb.id, nome: mb.nome, conversas: 0, agendamentos: 0, vendas: 0, valor_vendido: 0, transferencias: 0, mensagens: 0, primeira_resposta_seg: null, reativacoes: 0 }; m.vendedores.push(v); porNome.set(l.chave, v); }
+    }
+    if (v) v.reativacoes += l.contatos; else fora.push({ nome: l.nome, contatos: l.contatos });
+  }
+  mi.fora_da_loja = fora;
+  return m;
 }
 
 // Cartões com comparação (período atual x anterior). O Orbitta já devolve os dois. Guarda 5 min.
@@ -393,19 +429,20 @@ function resumirEquipe(lista) {
   }
   return { membros, primeira_resposta_seg: n ? Math.round(soma / n) : null };
 }
-// Troca os números de vendedor do que foi guardado pelos do Orbitta no período (mantém leads pegos/novos/reativações)
+// Troca os números de vendedor do que foi guardado pelos do Orbitta no período (reativações = Missão do dia)
 function aplicarEquipe(m, eq) {
   if (!m || !eq || !eq.atual) return m;
   const porId = new Map(m.vendedores.map((v) => [v.id, v]));
   for (const [id, x] of Object.entries(eq.atual.membros)) {
-    const v = porId.get(id) || { id, nome: x.nome, pegos: 0, novos: 0, reativacoes: 0 };
+    const v = porId.get(id) || { id, nome: x.nome, reativacoes: null };
     Object.assign(v, { nome: x.nome || v.nome, conversas: x.conversas, mensagens: x.mensagens, agendamentos: x.agendamentos, vendas: x.vendas,
       valor_vendido: x.valor_vendido, transferencias: x.transferencias, primeira_resposta_seg: x.primeira_resposta_seg });
     porId.set(id, v);
   }
   for (const [id, v] of porId) if (!eq.atual.membros[id]) Object.assign(v, { conversas: 0, mensagens: 0, agendamentos: 0, vendas: 0, valor_vendido: 0, transferencias: 0, primeira_resposta_seg: null });
-  m.vendedores = [...porId.values()].filter((v) => v.conversas || v.agendamentos || v.vendas || v.pegos || v.transferencias)
-    .sort((a, b) => b.pegos - a.pegos || b.conversas - a.conversas);
+  m.vendedores = [...porId.values()].filter((v) => v.conversas || v.agendamentos || v.vendas || v.transferencias || v.reativacoes)
+    .sort((a, b) => b.conversas - a.conversas || b.vendas - a.vendas);
+  aplicarMissao(m);
   m.loja.vendas = m.vendedores.reduce((t, v) => t + (v.vendas || 0), 0);
   m.primeira_resposta = { atual_seg: eq.atual.primeira_resposta_seg, anterior_seg: eq.anterior.primeira_resposta_seg };
   m.equipe_ao_vivo = true;
@@ -428,7 +465,7 @@ function periodoAnterior(periodo, ini, fim) {
   return intervalo('dia', somaDias(ini, -1));
 }
 
-// Cada vendedor no período anterior: métricas do Orbitta (vêm prontas) + leads que pegou (do que já foi sincronizado)
+// Cada vendedor no período anterior: métricas do Orbitta (vêm prontas) + reativações da Missão do dia
 function vendedoresAnterior(u, periodo, ini, fim) { return comLoja(u, () => _vendedoresAnterior(u, periodo, ini, fim)); }
 async function _vendedoresAnterior(u, periodo, ini, fim) {
   const v = vinculoDe(u); if (!v || !orbitta.configurado()) return null;
@@ -444,11 +481,8 @@ async function _vendedoresAnterior(u, periodo, ini, fim) {
     }
   } catch (e) { /* sem comparação de métricas */ }
   const m = montar(u.id, ant.ini, ant.fim);
-  const temConversas = db.prepare('SELECT 1 FROM orbitta_conversas WHERE usuario_id = ? AND data >= ? AND data <= ? LIMIT 1').get(u.id, ant.ini, ant.fim);
-  for (const x of m.vendedores) {
-    out[x.id] = { ...(out[x.id] || {}), ...(temConversas ? { pegos: x.pegos, novos: x.novos, reativacoes: x.reativacoes } : {}) };
-  }
-  return { ini: ant.ini, fim: ant.fim, tem_leads: !!temConversas, vendedores: out };
+  if (m.missao.tem) for (const x of m.vendedores) out[x.id] = { ...(out[x.id] || {}), reativacoes: x.reativacoes || 0 };
+  return { ini: ant.ini, fim: ant.fim, tem_leads: m.missao.tem, tem_missao: m.missao.tem, vendedores: out };
 }
 
 function lerPeriodo(q, padrao) {
