@@ -661,6 +661,37 @@ lojista.post('/sem-resposta/atualizar', async (req, res) => {
   const c = configDe(u);
   res.json({ vinculado: true, minutos: c.minutos, lista: semResposta(u), aviso, atualizado_em: new Date().toISOString() });
 });
+// Clientes que já compraram: agendamentos marcados como venda feita (situação "confirmed") nos últimos 12 meses, com valor
+const cacheCompras = new Map();
+function comprasDe(u) { return ob.comLoja(u, () => _comprasDe(u)); }
+async function _comprasDe(u) {
+  const v = ob.vinculoDe(u); if (!v) return null;
+  const c = cacheCompras.get(u.id);
+  if (c && Date.now() - c.em < 10 * 60 * 1000) return c.dados;
+  const fim = hojeBrasilia(), ini = somaDias(fim, -365);
+  const lista = [];
+  for (let off = 0, i = 0; i < 30; i++) {
+    const r = await orbitta.chamar('listar_agendamentos', { start_date: ini, end_date: fim, situacao: 'confirmed', limit: 100, offset: off, ...ob.filtros(v) });
+    lista.push(...(r.agendamentos || []));
+    if (!r.proximo_offset || !(r.agendamentos || []).length) break;
+    off = r.proximo_offset;
+  }
+  const vendas = lista.filter((a) => a.situacao === 'confirmed').map((a) => ({
+    data: a.data, hora: a.hora || null, cliente: a.cliente || null, telefone: a.telefone || null, cpf: a.cpf || null,
+    produto: a.produto || null, valor: a.valor_venda == null ? null : Number(a.valor_venda), conversa_id: a.conversa_id || null,
+  })).sort((a, b) => String(b.data).localeCompare(String(a.data)));
+  const comValor = vendas.filter((x) => x.valor != null);
+  const clientes = new Set(vendas.map((x) => x.conversa_id || x.telefone || x.cliente));
+  const dados = { ini, fim, vendas, total: vendas.length, sem_valor: vendas.length - comValor.length, clientes: clientes.size,
+    valor_total: Math.round(comValor.reduce((t, x) => t + x.valor, 0) * 100) / 100, gerado_em: new Date().toISOString() };
+  cacheCompras.set(u.id, { em: Date.now(), dados });
+  return dados;
+}
+lojista.get('/compraram', async (req, res) => {
+  const u = lojaDoUsuario(req, res); if (!u) return;
+  try { res.json({ vinculado: true, loja: u.negocio_nome || u.nome, ...(await comprasDe(u)) }); }
+  catch (e) { res.status(502).json({ erro: e.message }); }
+});
 lojista.get('/agendamentos', async (req, res) => {
   const u = lojaDoUsuario(req, res); if (!u) return;
   const hoje = hojeBrasilia();
