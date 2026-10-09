@@ -161,7 +161,8 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_orb_reat_dia ON orbitta_reativacoes (usu
 try { db.exec('ALTER TABLE orbitta_conversas ADD COLUMN reat_checada TEXT'); } catch (e) { /* já existe */ }
 const DIAS_PARADO = 2;
 // Marca de conversa já lida: muda junto com DIAS_PARADO, pra reler o dia quando a regra mudar
-const MARCA_REAT = '|d' + DIAS_PARADO;
+// Mudou a regra (IA não zera o tempo parado): a marca nova faz o dia ser lido de novo
+const MARCA_REAT = '|d' + DIAS_PARADO + 'p';
 // Trecho da conversa (mensagem antes da parada + as mensagens depois), pra mostrar mensagem por mensagem no painel
 try { db.exec('ALTER TABLE orbitta_reativacoes ADD COLUMN trecho TEXT'); db.exec('UPDATE orbitta_conversas SET reat_checada = NULL'); } catch (e) { /* já existe */ }
 const salvarReat = st(`INSERT INTO orbitta_reativacoes (usuario_id, conversa_id, msg_em, dia, parado_dias, texto, trecho) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -170,12 +171,16 @@ const msgCurta = (m) => ({ de: m.de, data: m.data, tipo: m.tipo || 'text', texto
 const marcarReat = st('UPDATE orbitta_conversas SET reat_checada = ? WHERE usuario_id = ? AND data = ? AND conversa_id = ?');
 
 // Acha, numa lista de mensagens em ordem, as do vendedor que vieram depois de 2+ dias sem conversa
+// Tempo parado = desde a última mensagem de uma PESSOA (cliente ou vendedor). Lembrete automático da IA não conta:
+// se a IA mandou um follow-up ontem pra um cliente sumido há uma semana, a mensagem do vendedor hoje ainda é reativação.
 function reativacoesNasMensagens(msgs, anterior) {
   const out = [];
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i];
     if (m.de !== 'atendente') continue;
-    const p = i ? msgs[i - 1] : anterior;
+    let p = null;
+    for (let j = i - 1; j >= 0; j--) if (msgs[j].de !== 'ia') { p = msgs[j]; break; }
+    if (!p) p = anterior;
     if (!p) continue;
     const dias = (new Date(m.data) - new Date(p.data)) / 86400000;
     if (dias < DIAS_PARADO) continue;
@@ -224,11 +229,19 @@ async function lerReativacoes(u, dia) {
       const r = await orbitta.chamar('ler_conversa', { id: c.conversa_id, origem, limit: 40 });
       const msgs = (r.mensagens || []).filter((m) => m && m.data);
       let anterior = null;
-      // A 1ª mensagem da página é do vendedor: busca a mensagem de antes pra medir o tempo parado
-      if (msgs[0] && msgs[0].de === 'atendente' && r.proxima_pagina_antes_de) {
-        const r2 = await orbitta.chamar('ler_conversa', { id: c.conversa_id, origem, limit: 3, antes_de: r.proxima_pagina_antes_de });
-        const ms2 = (r2.mensagens || []).filter((m) => m && m.data);
-        anterior = ms2[ms2.length - 1] || null;
+      // Antes da 1ª mensagem do vendedor na página só tem IA (ou nada): busca páginas de antes até achar
+      // a última mensagem de uma pessoa (cliente ou vendedor), pra medir o tempo parado de verdade
+      const iAt = msgs.findIndex((m) => m.de === 'atendente');
+      if (iAt >= 0 && !msgs.slice(0, iAt).some((m) => m.de !== 'ia') && r.proxima_pagina_antes_de) {
+        let antes = r.proxima_pagina_antes_de, primeiraVista = null;
+        for (let pag = 0; pag < 3 && antes && !anterior; pag++) {
+          const r2 = await orbitta.chamar('ler_conversa', { id: c.conversa_id, origem, limit: 20, antes_de: antes });
+          const ms2 = (r2.mensagens || []).filter((m) => m && m.data);
+          if (ms2.length) primeiraVista = ms2[0];
+          for (let j = ms2.length - 1; j >= 0; j--) if (ms2[j].de !== 'ia') { anterior = ms2[j]; break; }
+          antes = r2.proxima_pagina_antes_de;
+        }
+        if (!anterior) anterior = primeiraVista;
       }
       for (const { m, dias, trecho } of reativacoesNasMensagens(msgs, anterior)) {
         salvarReat.run(u.id, c.conversa_id, new Date(m.data).toISOString(), diaBrasilia(m.data), dias, String(m.texto || '').slice(0, 600), JSON.stringify(trecho));
@@ -300,15 +313,33 @@ function vendedorPeloContador(msgEm, subidas, usadas) {
 }
 
 const semAcento = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+// Som do nome: a transcrição do áudio escreve como ouve ("Íris" pra Irys, "Nicollas", "Mateus/Matheus")
+const somNome = (p) => semAcento(p).replace(/y/g, 'i').replace(/ph/g, 'f').replace(/th/g, 't').replace(/w/g, 'v').replace(/(.)\1+/g, '$1').replace(/h(?=[aeiou]|$)/g, '');
+function distancia(a, b) {
+  if (Math.abs(a.length - b.length) > 1) return 9;
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  return d[a.length][b.length];
+}
 const PALAVRAS_FORA = new Set(['de', 'da', 'do', 'das', 'dos', 'e']);
 // Quem mandou a mensagem de reativação, entre os vendedores da equipe do dia ({ id: nome })
 function vendedorDaMensagem(texto, equipe, vendDoDia, peloContador) {
   const t = semAcento(texto);
   const nomes = Object.entries(equipe).map(([id, nome]) => ({ id, partes: semAcento(nome).split(/\s+/).filter((p) => p.length >= 3 && !PALAVRAS_FORA.has(p)) }));
-  const comParte = (p) => nomes.filter((n) => n.partes.includes(p));
+  const comParte = (p) => {
+    const exato = nomes.filter((n) => n.partes.includes(p));
+    if (exato.length) return exato;
+    const s = somNome(p);
+    const mesmoSom = nomes.filter((n) => n.partes.some((x) => somNome(x) === s));
+    if (mesmoSom.length) return mesmoSom;
+    // uma letra de diferença (Juan/Ruan), só pra nomes de 4+ letras
+    return s.length >= 4 ? nomes.filter((n) => n.partes.some((x) => somNome(x).length >= 4 && distancia(somNome(x), s) <= 1)) : [];
+  };
   // 1) se apresentou: "sou o Nicolas", "meu nome é Lucas", "aqui é a Irys"
-  const ap = t.match(/\b(?:sou\s+(?:o|a)|meu\s+nome\s+e|aqui\s+(?:quem\s+fala\s+)?e\s+(?:o|a))\s+([a-z]{3,})/);
-  if (ap) { const c = comParte(ap[1]); if (c.length === 1) return c[0].id; }
+  // (também "aqui quem fala é Mateus", "quem tá falando aqui é o Nicolas", "eu sou a Íris")
+  const apRe = /\b(?:sou\s+(?:o\s+|a\s+)?|meu\s+nome\s+e\s+(?:o\s+|a\s+)?|(?:aqui\s+)?quem\s+(?:fala|ta\s+falando|esta\s+falando)(?:\s+aqui)?\s+e\s+(?:o\s+|a\s+)?|aqui\s+e\s+(?:o\s+|a\s+)?)([a-z]{3,})/g;
+  for (const ap of t.matchAll(apRe)) { const c = comParte(ap[1]); if (c.length === 1) return c[0].id; }
   // 2) o contador de conversas dele subiu no minuto da mensagem
   if (peloContador && equipe[peloContador]) return peloContador;
   // 2) marcou agendamento com esse cliente no dia
@@ -594,11 +625,16 @@ function iniciarAnalise() {
     try {
       const hoje = hojeBrasilia();
       const lista = st(`SELECT id, orbitta_vinculo FROM usuarios WHERE orbitta_vinculo IS NOT NULL AND orbitta_vinculo <> ''`).all();
-      for (const u of lista) {
-        if (!ob.vinculoDe(u)) continue;
-        await fotografarEquipe(u, hoje).catch((e) => console.error('Foto equipe Orbitta:', e.message));
-        if (aquecer) await ob.painelComparado(u, hoje, hoje).catch(() => null);
-      }
+      // 4 lojas por vez: com muitas lojas, uma de cada vez passava de 1 minuto e a foto atrasava
+      // (aí não dava pra saber quem mandou cada mensagem de reativação)
+      const fila = lista.filter((u) => ob.vinculoDe(u));
+      const trabalhar = async () => {
+        for (let u = fila.shift(); u; u = fila.shift()) {
+          await fotografarEquipe(u, hoje).catch((e) => console.error('Foto equipe Orbitta:', e.message));
+          if (aquecer) await ob.painelComparado(u, hoje, hoje).catch(() => null);
+        }
+      };
+      await Promise.all([trabalhar(), trabalhar(), trabalhar(), trabalhar()]);
     } finally { fotografando = false; }
   }, 60 * 1000);
 }
