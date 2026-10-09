@@ -472,41 +472,13 @@ async function _analiseLoja(u, hoje, fundo) {
     porId.get(id).reativacoes++;
   }
 
-  // Missão do dia: busca sozinho no Orbitta (se a ferramenta existir) e soma como reativação de cada vendedor
-  try {
-    const auto = await missaoDoOrbitta(u, ontem, f);
-    if (auto) guardarMissao(u.id, ontem, auto.linhas, 'orbitta');
-  } catch (e) { /* segue com o que tiver */ }
-  const missao = missaoDoDia(u.id, ontem);
-  // Se veio do Orbitta, vale o do Orbitta; senão, o colado
-  const temAuto = missao.some((x) => x.origem === 'orbitta');
-  const missaoValida = missao.filter((x) => !temAuto || x.origem === 'orbitta');
-  const porNome = new Map();
-  for (const [id, nome] of Object.entries(nomesEquipe)) porNome.set(normNome(nome), id);
-  let reatMissao = 0;
-  const missaoFora = [];
-  for (const x of vendedores) { x.reativacoes_conversa = x.reativacoes || 0; x.reativacoes_missao = 0; }
-  for (const mi of missaoValida) {
-    let id = porNome.get(mi.chave);
-    if (!id) { const curto = mi.chave.split(' ').slice(0, 2).join(' '); for (const [k, v] of porNome) if (k.startsWith(curto)) { id = v; break; } }
-    if (!id) { missaoFora.push({ nome: mi.nome, contatos: mi.contatos }); continue; }
-    if (!porId.has(id)) { const x = pega(id); x.reativacoes = 0; x.reativacoes_conversa = 0; x.reativacoes_missao = 0; x.nome = nomesEquipe[id] || mi.nome; vendedores.push(x); porId.set(id, x); }
-    const x = porId.get(id);
-    x.reativacoes_missao += mi.contatos;
-    x.missao = { contatos: mi.contatos, dias_meta: mi.dias_meta, acima_meta: mi.acima_meta };
-    reatMissao += mi.contatos;
-  }
-  // Reativação oficial por vendedor = só o número do Orbitta (ranking da Missão do dia). As achadas nas conversas
-  // ficam como detalhe (reativacoes_conversa / lista), sem entrar no número (09/10/2026).
-  for (const x of vendedores) x.reativacoes = missaoValida.length ? (x.reativacoes_missao || 0) : null;
+  // Reativação por vendedor = achadas nas conversas do Orbitta (o ranking da Missão do dia saiu, pedido do Mateus 09/10/2026)
+  for (const x of vendedores) x.reativacoes_conversa = x.reativacoes || 0;
 
   const g = (k) => (comparado && comparado[k] ? comparado[k].atual : null);
   return {
     vinculado: true, hoje, ontem,
-    reativacoes_missao: reatMissao,
     reativacoes_conversa: reatTotal,
-    missao: { tem: missaoValida.length > 0, origem: missaoValida.length ? (temAuto ? 'orbitta' : 'colado') : null,
-      atualizado_em: missaoValida.reduce((a, x) => (x.atualizado_em > a ? x.atualizado_em : a), ''), fora_da_loja: missaoFora },
     leads_novos: g('leads_novos') ?? m.loja.novos,
     leads_recorrentes: g('leads_recorrentes') ?? m.loja.reativacoes,
     agendamentos_hoje: compDia && compDia.agend_periodo ? compDia.agend_periodo.atual : paraHoje,
@@ -518,7 +490,7 @@ async function _analiseLoja(u, hoje, fundo) {
     vendedores,
     sem_vendedor: semVendedor,
     sem_vendedor_prox: porVend.has(null) ? porVend.get(null).ag_hoje : 0,
-    reativacoes_total: missaoValida.length ? reatMissao : null,
+    reativacoes_total: reatTotal,
     reativacoes_nao_identificadas: reatNaoIdent,
     incompleto: faltaram > 0 || lendoReat,
     lendo_reativacoes: lendoReat,
@@ -556,30 +528,6 @@ lojista.get('/analise', async (req, res) => {
   if (!orbitta.configurado()) return res.json({ vinculado: false });
   try { res.json({ loja: { id: u.id, nome: u.negocio_nome || u.nome }, ...(await analiseLoja(u, dataPedida(req.query))) }); }
   catch (e) { res.status(502).json({ erro: 'Não deu pra falar com o Orbitta: ' + e.message }); }
-});
-
-// Colar o ranking da Missão do dia copiado do Orbitta: { dia, texto }
-lojista.post('/missao', async (req, res) => {
-  const u = lojaPorId(req.usuarioId);
-  if (!u || !ob.vinculoDe(u)) return res.status(400).json({ erro: 'Loja não vinculada ao Orbitta.' });
-  const b = req.body || {};
-  const dia = dataValida(b.dia) ? b.dia : somaDias(hojeBrasilia(), 0);
-  // Nomes possíveis: equipe do Orbitta desse dia + todos os nomes que já vimos
-  const nomes = new Set();
-  try { const eq = await ob.comLoja(u, () => ob.equipeAoVivo(u, dia, dia)); for (const mb of Object.values((eq && eq.atual && eq.atual.membros) || {})) if (mb.nome) nomes.add(mb.nome); } catch (e) { /* segue */ }
-  st('SELECT nome FROM orbitta_membros').all().forEach((r) => nomes.add(r.nome));
-  const linhas = lerRankingColado(b.texto, [...nomes]);
-  if (!linhas.length) return res.status(400).json({ erro: 'Não achei nenhum vendedor no texto. Copie a tabela do ranking inteira (com os nomes e os números) e cole de novo.' });
-  guardarMissao(u.id, dia, linhas, 'colado');
-  for (const k of [...cache.keys()]) if (k.startsWith(u.id + '|')) cache.delete(k);
-  res.json({ ok: true, dia, linhas });
-});
-lojista.delete('/missao', (req, res) => {
-  const dia = dataValida(req.query.dia) ? req.query.dia : null;
-  if (!dia) return res.status(400).json({ erro: 'Diga o dia.' });
-  st("DELETE FROM orbitta_missao WHERE usuario_id = ? AND dia = ? AND origem = 'colado'").run(req.usuarioId, dia);
-  for (const k of [...cache.keys()]) if (k.startsWith(req.usuarioId + '|')) cache.delete(k);
-  res.json({ ok: true });
 });
 
 // /api/lojas/analise — todas as lojas que a pessoa enxerga (e a própria), uma embaixo da outra
