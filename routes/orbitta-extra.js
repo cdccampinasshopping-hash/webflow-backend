@@ -79,7 +79,12 @@ const nomeMembro = db.prepare('SELECT nome FROM orbitta_membros WHERE id = ?');
 // ---------------- 1) Alerta de lead esquecido ----------------
 // Lê todas as conversas do dia que mudaram (até 60 por minuto por loja), pra medir o tempo de resposta de todas
 const LER_POR_RODADA = 60;
-function verificarRespostas(u) { return ob.comLoja(u, () => _verificarRespostas(u)); }
+// Uma leitura por loja de cada vez: se o botão "Atualizar" e a rodada de 20 s pedirem juntos, os dois esperam a mesma
+const lendoLoja = new Map();
+function verificarRespostas(u) {
+  if (!lendoLoja.has(u.id)) lendoLoja.set(u.id, ob.comLoja(u, () => _verificarRespostas(u)).finally(() => lendoLoja.delete(u.id)));
+  return lendoLoja.get(u.id);
+}
 async function _verificarRespostas(u) {
   const v = ob.vinculoDe(u); if (!v) return;
   const hoje = hojeBrasilia();
@@ -644,6 +649,17 @@ lojista.get('/sem-resposta', (req, res) => {
   const u = lojaDoUsuario(req, res); if (!u) return;
   const c = configDe(u);
   res.json({ vinculado: true, minutos: c.minutos, lista: semResposta(u) });
+});
+// Botão "Atualizar" da lista de quem precisa de resposta: lê o Orbitta agora (até 25 s) e devolve a lista nova
+lojista.post('/sem-resposta/atualizar', async (req, res) => {
+  const u = lojaDoUsuario(req, res); if (!u) return;
+  let aviso = null;
+  try {
+    const r = await Promise.race([verificarRespostas(u).then(() => 'ok'), new Promise((ok) => setTimeout(() => ok('demorou'), 25000))]);
+    if (r === 'demorou') aviso = 'O Orbitta está demorando. Mostrando o que já chegou; o resto aparece sozinho.';
+  } catch (e) { aviso = 'O Orbitta não respondeu agora: ' + e.message; }
+  const c = configDe(u);
+  res.json({ vinculado: true, minutos: c.minutos, lista: semResposta(u), aviso, atualizado_em: new Date().toISOString() });
 });
 lojista.get('/agendamentos', async (req, res) => {
   const u = lojaDoUsuario(req, res); if (!u) return;
