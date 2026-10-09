@@ -324,7 +324,12 @@ function distancia(a, b) {
 }
 const PALAVRAS_FORA = new Set(['de', 'da', 'do', 'das', 'dos', 'e']);
 // Quem mandou a mensagem de reativação, entre os vendedores da equipe do dia ({ id: nome })
-function vendedorDaMensagem(texto, equipe, vendDoDia, peloContador) {
+// Vendedor que se apresentou nesse texto ("aqui é o João"), ou null
+function apresentadoNoTexto(texto, equipe) { return vendedorDaMensagem(texto, equipe, null, null, null, true); }
+
+// vizinhas: outras mensagens de vendedor na MESMA conversa, perto dessa ({ data, texto }).
+// Se ele mandou um áudio sem se apresentar e logo antes/depois mandou outra dizendo "aqui é o João", é o João.
+function vendedorDaMensagem(texto, equipe, vendDoDia, peloContador, vizinhas, soApresentacao) {
   const t = semAcento(texto);
   const nomes = Object.entries(equipe).map(([id, nome]) => ({ id, partes: semAcento(nome).split(/\s+/).filter((p) => p.length >= 3 && !PALAVRAS_FORA.has(p)) }));
   const comParte = (p) => {
@@ -340,6 +345,13 @@ function vendedorDaMensagem(texto, equipe, vendDoDia, peloContador) {
   // (também "aqui quem fala é Mateus", "quem tá falando aqui é o Nicolas", "eu sou a Íris")
   const apRe = /\b(?:sou\s+(?:o\s+|a\s+)?|meu\s+nome\s+e\s+(?:o\s+|a\s+)?|(?:aqui\s+)?quem\s+(?:fala|ta\s+falando|esta\s+falando)(?:\s+aqui)?\s+e\s+(?:o\s+|a\s+)?|aqui\s+e\s+(?:o\s+|a\s+)?)([a-z]{3,})/g;
   for (const ap of t.matchAll(apRe)) { const c = comParte(ap[1]); if (c.length === 1) return c[0].id; }
+  if (soApresentacao) return null;
+  // 1b) continuidade: mesma conversa, até 30 min antes/depois, outra mensagem de vendedor em que ele se apresentou
+  if (vizinhas && vizinhas.length) {
+    const achados = new Set();
+    for (const v of vizinhas) { const id = apresentadoNoTexto(v.texto, equipe); if (id) achados.add(id); }
+    if (achados.size === 1) return [...achados][0];
+  }
   // 2) o contador de conversas dele subiu no minuto da mensagem
   if (peloContador && equipe[peloContador]) return peloContador;
   // 2) marcou agendamento com esse cliente no dia
@@ -463,8 +475,12 @@ async function _analiseLoja(u, hoje, fundo) {
   for (const ev of eventos) {
     if (contadas.has(ev.conversa_id)) continue; // um cliente conta uma vez por dia
     contadas.add(ev.conversa_id); reatTotal++;
-    const id = vendedorDaMensagem(ev.texto, nomesEquipe, vendDoDia.get(ev.conversa_id), vendedorPeloContador(ev.msg_em, subidas, usadas));
     let trecho = null; try { trecho = ev.trecho ? JSON.parse(ev.trecho) : null; } catch (e) { /* sem trecho */ }
+    // Mensagens do vendedor na mesma conversa até 30 min da reativação (continuidade: áudio sem nome + texto com nome)
+    const tEv = new Date(ev.msg_em).getTime();
+    const vizinhas = ((trecho && trecho.depois) || []).filter((x) => x && x.de === 'atendente' && x.texto && x.texto !== ev.texto
+      && Math.abs(new Date(x.data).getTime() - tEv) <= 30 * 60000);
+    const id = vendedorDaMensagem(ev.texto, nomesEquipe, vendDoDia.get(ev.conversa_id), vendedorPeloContador(ev.msg_em, subidas, usadas), vizinhas);
     reatLista.push({ conversa_id: ev.conversa_id, cliente: ev.contato || 'Cliente', vendedor_id: id, vendedor: id ? (nomesEquipe[id] || null) : null,
       em: ev.msg_em, parado_dias: ev.parado_dias, trecho: trecho || { antes: null, depois: [{ de: 'atendente', data: ev.msg_em, texto: ev.texto }] } });
     if (!id) { reatNaoIdent++; continue; }
@@ -639,4 +655,4 @@ function iniciarAnalise() {
   }, 60 * 1000);
 }
 
-module.exports = { lojista, lojas, iniciarAnalise, reativacoesNasMensagens, vendedorDaMensagem, vendedorPeloContador, lerRankingColado, normNome };
+module.exports = { lojista, lojas, iniciarAnalise, reativacoesNasMensagens, vendedorDaMensagem, apresentadoNoTexto, vendedorPeloContador, lerRankingColado, normNome };
