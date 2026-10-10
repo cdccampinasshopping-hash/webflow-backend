@@ -144,8 +144,8 @@ async function listarAgendamentos(f, ini, fim) {
 }
 
 /* ---------------- Reativação por vendedor ----------------
-   Conta +1 quando o vendedor (atendente) manda mensagem pra um cliente que estava há 2 dias ou mais (DIAS_PARADO) sem conversa
-   (a mensagem anterior da conversa, de qualquer um, tem 2+ dias). O Orbitta não diz qual vendedor mandou a mensagem;
+   Conta +1 quando o vendedor (atendente) chama hoje um cliente que já existia e não tinha falado hoje
+   (a mensagem anterior de uma pessoa na conversa é de um dia anterior). Um por cliente por dia. O Orbitta não diz qual vendedor mandou a mensagem;
    o vendedor é reconhecido pelo nome na mensagem ("sou o Nicolas"), pelo agendamento marcado no dia ou, por último,
    por um nome da equipe citado na mensagem. */
 db.exec(`CREATE TABLE IF NOT EXISTS orbitta_reativacoes (
@@ -159,10 +159,12 @@ db.exec(`CREATE TABLE IF NOT EXISTS orbitta_reativacoes (
 )`);
 db.exec('CREATE INDEX IF NOT EXISTS idx_orb_reat_dia ON orbitta_reativacoes (usuario_id, dia)');
 try { db.exec('ALTER TABLE orbitta_conversas ADD COLUMN reat_checada TEXT'); } catch (e) { /* já existe */ }
-const DIAS_PARADO = 2;
+// 09/10/2026 (pedido do Mateus): reativação = o vendedor chamou hoje um cliente que não tinha falado hoje
+// (a última mensagem de uma pessoa na conversa é de um dia anterior). Antes exigia 2+ dias parado.
+const DIAS_PARADO = 1;
 // Marca de conversa já lida: muda junto com DIAS_PARADO, pra reler o dia quando a regra mudar
 // Mudou a regra (IA não zera o tempo parado): a marca nova faz o dia ser lido de novo
-const MARCA_REAT = '|d' + DIAS_PARADO + 'p';
+const MARCA_REAT = '|dia' + DIAS_PARADO + 'p';
 // Trecho da conversa (mensagem antes da parada + as mensagens depois), pra mostrar mensagem por mensagem no painel
 try { db.exec('ALTER TABLE orbitta_reativacoes ADD COLUMN trecho TEXT'); db.exec('UPDATE orbitta_conversas SET reat_checada = NULL'); } catch (e) { /* já existe */ }
 const salvarReat = st(`INSERT INTO orbitta_reativacoes (usuario_id, conversa_id, msg_em, dia, parado_dias, texto, trecho) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -183,11 +185,12 @@ function reativacoesNasMensagens(msgs, anterior) {
     if (!p) p = anterior;
     if (!p) continue;
     const dias = (new Date(m.data) - new Date(p.data)) / 86400000;
-    if (dias < DIAS_PARADO) continue;
+    // conta quando a última conversa com uma pessoa foi num dia anterior (em Brasília)
+    if (diaBrasilia(p.data) >= diaBrasilia(m.data)) continue;
     // Mensagens depois da parada (até a próxima parada de 2+ dias), no máximo 15
     const depois = [];
     for (let j = i; j < msgs.length && depois.length < 15; j++) {
-      if (j > i && (new Date(msgs[j].data) - new Date(msgs[j - 1].data)) / 86400000 >= DIAS_PARADO) break;
+      if (j > i && diaBrasilia(msgs[j].data) !== diaBrasilia(msgs[j - 1].data)) break;
       depois.push(msgCurta(msgs[j]));
     }
     out.push({ m, dias: Math.floor(dias), trecho: { antes: msgCurta(p), depois } });
@@ -210,7 +213,7 @@ function lerReativacoesEmFundo(u, dia) {
   return lendoAgora.has(k) || faltaLerReat(u.id, dia) > 0;
 }
 function faltaLerReat(usuarioId, dia) {
-  const limite = new Date(new Date(dia + 'T03:00:00Z').getTime() - DIAS_PARADO * 86400000).toISOString();
+  const limite = new Date(dia + 'T03:00:00Z').toISOString(); // conversa que começou antes de hoje
   return st(`SELECT COUNT(*) AS n FROM orbitta_conversas WHERE usuario_id = ? AND data = ?
     AND (primeira_mensagem IS NULL OR primeira_mensagem < ?) AND (reat_checada IS NULL OR reat_checada <> ultima_mensagem || ?)`).get(usuarioId, dia, limite, MARCA_REAT).n;
 }
@@ -219,7 +222,7 @@ async function lerReativacoes(u, dia) {
   if (falhou.size > 5000) falhou.clear();
   const inicio = new Date(dia + 'T03:00:00Z');
   // Só conversas que começaram há 2+ dias podem ter ficado 2 dias paradas
-  const limite = new Date(inicio.getTime() - DIAS_PARADO * 86400000).toISOString();
+  const limite = inicio.toISOString(); // só conversa que começou antes desse dia pode ser reativação
   const lista = st(`SELECT conversa_id, origem, ultima_mensagem FROM orbitta_conversas WHERE usuario_id = ? AND data = ?
     AND (primeira_mensagem IS NULL OR primeira_mensagem < ?) AND (reat_checada IS NULL OR reat_checada <> ultima_mensagem || ?)
     ORDER BY ultima_mensagem DESC LIMIT 60`).all(u.id, dia, limite, MARCA_REAT);
@@ -339,9 +342,10 @@ function vendedorDaMensagem(texto, equipe, vendDoDia, peloContador) {
   // 1) se apresentou: "sou o Nicolas", "meu nome é Lucas", "aqui é a Irys"
   // (também "aqui quem fala é Mateus", "quem tá falando aqui é o Nicolas", "eu sou a Íris")
   const apRe = /\b(?:sou\s+(?:o\s+|a\s+)?|meu\s+nome\s+e\s+(?:o\s+|a\s+)?|(?:aqui\s+)?quem\s+(?:fala|ta\s+falando|esta\s+falando)(?:\s+aqui)?\s+e\s+(?:o\s+|a\s+)?|aqui\s+e\s+(?:o\s+|a\s+)?)([a-z]{3,})/g;
-  for (const ap of t.matchAll(apRe)) { const c = comParte(ap[1]); if (c.length === 1) return c[0].id; }
-  // 2) o contador de conversas dele subiu no minuto da mensagem
+  // 1) o usuário que mandou: o contador de conversas dele no Orbitta subiu no minuto da mensagem
   if (peloContador && equipe[peloContador]) return peloContador;
+  // 2) se apresentou na mensagem
+  for (const ap of t.matchAll(apRe)) { const c = comParte(ap[1]); if (c.length === 1) return c[0].id; }
   // 2) marcou agendamento com esse cliente no dia
   if (vendDoDia && equipe[vendDoDia]) return vendDoDia;
   // 3) um único nome da equipe aparece na mensagem
