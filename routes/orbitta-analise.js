@@ -498,6 +498,11 @@ async function _analiseLoja(u, hoje, fundo) {
     reativacoes_nao_identificadas: reatNaoIdent,
     incompleto: faltaram > 0 || lendoReat,
     lendo_reativacoes: lendoReat,
+    // Quais clientes contaram (pra conferir no painel): cliente, vendedor, hora e trecho da conversa
+    reativacoes_lista: reatLista.slice(-400).map((x) => {
+      const curta = (m) => (m ? { de: m.de, data: m.data, texto: String(m.texto || '').slice(0, 300) } : null);
+      return { ...x, trecho: { antes: curta(x.trecho && x.trecho.antes), depois: ((x.trecho && x.trecho.depois) || []).slice(0, 4).map(curta) } };
+    }),
     gerado_em: new Date().toISOString(),
   };
 }
