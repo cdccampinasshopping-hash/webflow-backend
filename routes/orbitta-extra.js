@@ -110,12 +110,19 @@ async function _verificarRespostas(u) {
   const mudaram = db.prepare(`SELECT conversa_id, origem, ultima_mensagem FROM orbitta_conversas WHERE usuario_id = ? AND data = ?
     AND (checada_msg IS NULL OR checada_msg <> ultima_mensagem) ORDER BY ultima_mensagem DESC LIMIT ?`).all(u.id, hoje, LER_POR_RODADA);
   const marcar = db.prepare('UPDATE orbitta_conversas SET ultimo_de = ?, ultimo_em = ?, checada_msg = ? WHERE usuario_id = ? AND data = ? AND conversa_id = ?');
+  // 1ª mensagem do vendedor no dia em cada conversa (pra saber, pelo contador do Orbitta, qual vendedor pegou o lead)
+  const marcarAtend = db.prepare('UPDATE orbitta_conversas SET atend_em = ? WHERE usuario_id = ? AND data = ? AND conversa_id = ? AND (atend_em IS NULL OR atend_em > ?)');
+  const inicioHoje = new Date(hoje + 'T03:00:00Z');
   for (const c of mudaram) {
     try {
       // 40 mensagens: pega as idas e vindas do dia inteiro, não só o fim da conversa
       const r = await orbitta.chamar('ler_conversa', { id: c.conversa_id, origem: c.origem || 'agente', limit: 40 });
       const msgs = r.mensagens || [];
       try { ob.registrarRespostas(u.id, c.conversa_id, msgs); } catch (e) { /* não trava o alerta */ }
+      try {
+        const pv = msgs.find((m) => m.de === 'atendente' && new Date(m.data) >= inicioHoje);
+        if (pv) { const em = new Date(pv.data).toISOString(); marcarAtend.run(em, u.id, hoje, c.conversa_id, em); }
+      } catch (e) { /* segue */ }
       const ult = msgs[msgs.length - 1];
       const quando = new Date(ult ? (ult.data || c.ultima_mensagem) : 0);
       if (ult) marcar.run(ult.de === 'cliente' ? 'cliente' : 'loja', isNaN(quando) ? null : quando.toISOString(), c.ultima_mensagem, u.id, hoje, c.conversa_id);

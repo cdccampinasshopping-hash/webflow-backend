@@ -42,6 +42,7 @@ db.exec(`
 // pra cada conversa e travava o servidor (09/10/2026)
 db.exec('CREATE INDEX IF NOT EXISTS idx_orb_conv_conversa ON orbitta_conversas (usuario_id, conversa_id, data)');
 
+try { db.exec('ALTER TABLE orbitta_conversas ADD COLUMN atend_em TEXT'); } catch (e) { /* já existe */ }
 // Tempo de resposta medido pelo próprio servidor: cliente mandou mensagem → vendedor (atendente) respondeu
 db.exec(`CREATE TABLE IF NOT EXISTS orbitta_respostas (
   usuario_id INTEGER NOT NULL,

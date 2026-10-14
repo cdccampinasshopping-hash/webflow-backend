@@ -462,18 +462,38 @@ async function _analiseLoja(u, hoje, fundo) {
   const eventos = st(`SELECT r.conversa_id, r.texto, r.msg_em, r.parado_dias, r.trecho,
       (SELECT c.contato FROM orbitta_conversas c WHERE c.usuario_id = r.usuario_id AND c.conversa_id = r.conversa_id AND c.contato IS NOT NULL LIMIT 1) AS contato
     FROM orbitta_reativacoes r WHERE r.usuario_id = ? AND r.dia = ? ORDER BY r.msg_em`).all(u.id, ontem);
+  // Quem pegou cada conversa do dia: o contador de conversas do vendedor sobe no minuto da 1ª mensagem dele.
+  // Calculado uma vez, em ordem de horário, pra reativações e leads novos não disputarem a mesma subida.
+  const convsAt = st('SELECT conversa_id, atend_em, primeira_mensagem FROM orbitta_conversas WHERE usuario_id = ? AND data = ? AND atend_em IS NOT NULL').all(u.id, ontem);
+  const momentos = new Map();
+  for (const c of convsAt) momentos.set(c.conversa_id, c.atend_em);
+  for (const ev of eventos) if (!momentos.has(ev.conversa_id)) momentos.set(ev.conversa_id, ev.msg_em);
+  const atendPor = new Map();
+  for (const [cid, em] of [...momentos.entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1])))) atendPor.set(cid, vendedorPeloContador(em, subidas, usadas));
   const reatLista = [];
   const contadas = new Set();
   for (const ev of eventos) {
     if (contadas.has(ev.conversa_id)) continue; // um cliente conta uma vez por dia
     contadas.add(ev.conversa_id); reatTotal++;
-    const id = vendedorDaMensagem(ev.texto, nomesEquipe, vendDoDia.get(ev.conversa_id), vendedorPeloContador(ev.msg_em, subidas, usadas));
+    const id = vendedorDaMensagem(ev.texto, nomesEquipe, vendDoDia.get(ev.conversa_id), atendPor.get(ev.conversa_id));
     let trecho = null; try { trecho = ev.trecho ? JSON.parse(ev.trecho) : null; } catch (e) { /* sem trecho */ }
     reatLista.push({ conversa_id: ev.conversa_id, cliente: ev.contato || 'Cliente', vendedor_id: id, vendedor: id ? (nomesEquipe[id] || null) : null,
       em: ev.msg_em, parado_dias: ev.parado_dias, trecho: trecho || { antes: null, depois: [{ de: 'atendente', data: ev.msg_em, texto: ev.texto }] } });
     if (!id) { reatNaoIdent++; continue; }
     if (!porId.has(id)) { const x = pega(id); x.reativacoes = 0; if (nomesEquipe[id]) x.nome = nomesEquipe[id]; vendedores.push(x); porId.set(id, x); }
     porId.get(id).reativacoes++;
+  }
+
+  // Leads novos por vendedor: cliente que falou com a loja pela 1ª vez no dia e que esse vendedor pegou (pelo contador)
+  let novosNaoIdent = 0;
+  const inicioNovos = new Date(ontem + 'T03:00:00Z');
+  for (const x of vendedores) x.novos = 0;
+  for (const c of convsAt) {
+    if (!c.primeira_mensagem || !(new Date(c.primeira_mensagem) >= inicioNovos)) continue;
+    const id = atendPor.get(c.conversa_id);
+    if (!id) { novosNaoIdent++; continue; }
+    if (!porId.has(id)) { const x = pega(id); x.reativacoes = x.reativacoes || 0; x.novos = 0; if (nomesEquipe[id]) x.nome = nomesEquipe[id]; vendedores.push(x); porId.set(id, x); }
+    porId.get(id).novos++;
   }
 
   // Reativação por vendedor = achadas nas conversas do Orbitta (o ranking da Missão do dia saiu, pedido do Mateus 09/10/2026)
@@ -496,6 +516,7 @@ async function _analiseLoja(u, hoje, fundo) {
     sem_vendedor_prox: porVend.has(null) ? porVend.get(null).ag_hoje : 0,
     reativacoes_total: reatTotal,
     reativacoes_nao_identificadas: reatNaoIdent,
+    novos_nao_identificados: novosNaoIdent,
     incompleto: faltaram > 0 || lendoReat,
     lendo_reativacoes: lendoReat,
     // Quais clientes contaram (pra conferir no painel): cliente, vendedor, hora e trecho da conversa
